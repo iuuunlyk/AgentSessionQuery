@@ -1,0 +1,53 @@
+# ===== Windows 系统文件 =====
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+*.cab
+
+# ===== 编辑器 / IDE =====
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.swp
+*.swo
+
+# ===== 日志与临时产物 =====
+*.log
+*.tmp
+
+# ===== 本机个人配置（含本地路径，不入库）=====
+*.local.ps1
+config.local.*
+
+# ===== 测试输出（Pester 等）=====
+PesterOutput/
+
+# ===== WorkBuddy 内部数据目录（非源码）=====
+.workbuddy/
+
+# ===== 闭源：开发过程与内部文档（不对外开源）=====
+# 开源交付物（入库）：
+#   配置文件：.gitattributes / .gitignore / LICENSE
+#   文档：README.md / CHANGELOG.md / docs/v1.0.0-release-notes.md（首发发布说明；v0.x 历史发布说明不随开源发布）
+#   脚本（5 个 .ps1）：asq.ps1（统一命令本体） + claude-sessions.ps1 / codex-sessions.ps1 / workbuddy-sessions.ps1（三转发子命令） + session-profile-aliases.ps1（Profile 别名）
+#   其余文件（开发过程、测试、内部设计文档、本地 AI 客户端配置、本地交接文档）均闭源，不进入仓库。
+.agent_assets/
+tests/
+.claude/
+README-private.md
+AGENTS.md
+CLAUDE.md
+CodexActivityTools.psm1
+CHANGELOG.private.md
+
+# ===== 本地交接文档（不入库）=====
+# handoff/ 为本地交接 packet，含 context/decision/runbook/status 等过程文档，不随开源发布。
+handoff/
+
+# ===== 审计 / 收尾产物（不入库）=====
+# neat-freak 等审计输出文档，落盘于仓库根目录，不随开源发布；通配符覆盖后续同类产物。
+NEATFREAK-AUDIT-*.md
+
+# ===== 历史发布说明（v0.x，不随开源发布）=====
+docs/v0.*-release-notes.md

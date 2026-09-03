@@ -1,13 +1,14 @@
 <#
 AgentsSessionQuery 统一命令（规划 1 单命令重构）
-版本: v0.2.4
+版本: v1.1.0
 更新日期: 2026-08-31
-本命令是 codex-sessions / claude-sessions / workbuddy-sessions 三套件的统一入口：
+本命令是 OpenAI Codex / Claude Code / WorkBuddy 三客户端会话记录的统一查询入口：
   - 通过 -Source codex|claude|workbuddy 选择查询对象；来源也可写为第一个位置参数（asq codex -g）；
   - 三套采集算法（含 token 解析口径）逐字移植自原三脚本，字段 schema 与输出格式零回归；
   - 统一参数容错（Limit 非数字 → 人话报错，列出本次开关含 -Source）、统一三态数据源检测、
     统一过滤/排序/Limit、统一 Format-SessionCell 截断对齐；按 Source 分发表 / -AsJson / -c 详情 / -s 详情。
-  - 原三脚本已降级为转发 wrapper（保留命令名），别名仍转发到本命令。
+  - 原三脚本（codex-sessions.ps1 / claude-sessions.ps1 / workbuddy-sessions.ps1，转发 wrapper）已退役删除，
+    套件收敛为单一命令 asq（session-profile-aliases.ps1 仅注册 asq 函数）。
 
 原三脚本版本与算法说明（保持口径一致）：
   codex-sessions  v1.2.7  — stateful-delta token 解析（last_token_usage 增量主源）
@@ -52,7 +53,7 @@ param(
     [string]$SessionId,
 
     [Alias('o')]
-    [ValidateSet('LastActivity', 'WorkspacePath', 'time', 'path', 'cwd')]
+    [ValidateSet('LastActivity', 'WorkspacePath')]
     [string]$SortBy = 'LastActivity',
 
     [ValidateSet('任务', '空间')]
@@ -914,7 +915,7 @@ function Get-ClaudeSessionMeta {
         Mode         = $mode
         LastActivity = $lastActivity
         MessageCount = $messageCount
-        ModelId      = $modelId
+        Model      = $modelId
         RoutingName  = $routingName
         Tokens       = $inputTokens + $outputTokens + $cacheReadTokens + $cacheWriteTokens
         InputTokens  = $inputTokens
@@ -1035,7 +1036,7 @@ function Get-ClaudeSessions {
             Mode           = $meta.Mode
             LastActivity   = $meta.LastActivity
             MessageCount   = $meta.MessageCount
-            ModelId        = $meta.ModelId
+            Model        = $meta.Model
             Tokens         = $meta.Tokens
             InputTokens    = $meta.InputTokens
             OutputTokens   = $meta.OutputTokens
@@ -1430,47 +1431,45 @@ function Show-AgentsSessionQueryHelp {
 asq - 本机 Codex / Claude / WorkBuddy 历史会话统一查询命令
 
 用法:
-  asq codex                               # 查询 Codex / OMX 会话（来源可作第一个位置参数，等价于 -Source codex）
-  asq codex -g                            # 位置来源 + -g / -Global：全局模式，不按当前路径过滤
-  asq -Source codex                       # 查询 Codex / OMX 会话（默认按当前路径过滤，最近 20 条）
-  asq -Source claude                      # 查询 Claude Code 会话
-  asq -Source workbuddy                   # 查询 WorkBuddy 会话（需 Python 桥接）
-  asq codex 50                            # 位置参数即 Limit：显示最近 50 条（等价于 -n 50；来源 50 均为位置参数）
-  asq -Source codex -g                    # -g / -Global：全局模式，不按当前路径过滤
-  asq -Source codex -r                    # -r / -IncludeSubdirectories：当前路径及其子目录
-  asq -Source codex -c                    # -c / -ShowCommands：详细视图（完整字段 + resume 命令）
-  asq -Source codex -q scripts            # -q / -SessionIdLike：在 SessionId / Title / WorkspacePath 模糊匹配
-  asq -Source codex -t "某个标题"         # -t / -TitleLike：仅按 Title 模糊匹配
-  asq -Source claude -s <id>              # -s / -SessionId：单会话完整详情（仅 Claude / WorkBuddy）
-  asq -Source codex -WorkspacePath "$HOME\scripts"   # -WorkspacePath：指定筛选路径（默认当前 PowerShell 路径）
-  asq -Source codex -o WorkspacePath      # -o / -SortBy：按工作区路径升序（time→LastActivity、path/cwd→WorkspacePath）
-  asq -Source workbuddy -Type 任务        # -Type：按派生类型筛选（仅 WorkBuddy：任务 / 空间）
-  asq -Source workbuddy -DbPath "$HOME\workbuddy-backup.db"   # -DbPath：指定 workbuddy.db（默认 ~/.workbuddy/workbuddy.db）
-  asq -Source codex -RootPath "$HOME\.codex"   # -RootPath：指定 Codex / Claude 数据根目录
-  asq -Source codex -AsJson               # -AsJson：输出 JSON（多条为数组、单条为对象）
-  asq --help                              # -h / -? / --help：显示本帮助（四种写法均可）
-  asq -h                                  # 同上：显示本帮助
-  asq -?                                  # 同上：显示本帮助
-  asq --version                           # -v / -Version：显示命令版本号（v1.0.0）
+  asq <codex|claude|workbuddy> [选项]
 
-参数:
-  -Source <codex|claude|workbuddy>   （必填）选择查询对象；可写为第一个位置参数（asq codex ...），
-                                      缺失或非法时给出友好报错。
-  -c  显示详细命令视图（含会话路径、resume 命令等完整字段）
-  -s <sessionId>, -SessionId <sessionId>   查看指定会话完整详情（忽略路径过滤；仅 Claude / WorkBuddy 支持）
-  -q <检索词>   按 SessionId / Title / WorkspacePath 统一模糊筛选
-  -t <标题检索词>, -TitleLike <标题检索词>   只按 Title 模糊筛选
-  -Type <任务|空间>   按派生类型筛选（仅 WorkBuddy）
-  -g, -Global   显示全局 session，不按当前路径筛选
-  -r, -IncludeSubdirectories   在当前路径筛选中包含子目录 session
-  -WorkspacePath <路径>   指定用于筛选 session 工作区的路径（默认当前 PowerShell 路径）
-  -RootPath <路径>   Codex / Claude 数据根目录（默认 ~/.codex 或 ~/.claude）
-  -DbPath <路径>   WorkBuddy 数据库文件路径（默认 ~/.workbuddy/workbuddy.db）
-  -o <LastActivity|WorkspacePath|time|path|cwd>   排序方式（默认 LastActivity）
-  -Limit <N>, -n <N>   限制输出条数（默认 20；也可直接写数字）
-  -AsJson   输出 JSON
-  -h, -?, --help   显示帮助
-  -v, -Version   显示版本号
+  首个参数（或 -Source）必须指明查询哪一家的历史会话；它是唯一必填项：
+    codex      查询 Codex / OMX 历史会话
+    claude     查询 Claude Code 历史会话
+    workbuddy  查询 WorkBuddy 历史会话（需 Python 桥接）
+  最小可用写法：asq codex / asq claude / asq workbuddy，其余均为可选。
+
+常用示例:
+  asq workbuddy                      # 最近 20 条 WorkBuddy 会话（默认按当前路径过滤）
+  asq claude -g                      # -g / -Global：全局模式，不按当前路径过滤
+  asq codex -c                       # -c / -ShowCommands：详细视图（完整字段 + resume 命令）
+  asq codex -q scripts               # -q：在 SessionId / Title / WorkspacePath 中模糊检索
+  asq workbuddy -Type 任务           # -Type：按派生类型筛选（仅 workbuddy）
+  asq claude -s <sessionId>          # -s：单会话完整详情（仅 claude / workbuddy）
+  asq -Source codex -AsJson          # -AsJson：输出 JSON（多条为数组、单条为对象）
+  asq codex 50                       # 位置参数 50 = 显示条数（等价于 -n 50）
+  asq -h                             # 帮助：-h / -? / --help / help 均可
+  asq -v                             # 版本号：-v / -Version（v1.1.0）
+
+通用选项:
+  -Source <codex|claude|workbuddy>   显式指定来源（等价于首个位置参数写法，如 asq codex）
+  -g, -Global                        不按当前路径过滤，显示全局 session
+  -r, -IncludeSubdirectories         在当前路径筛选中包含子目录 session
+  -c, -ShowCommands                  详细命令视图（含会话路径、resume 命令等完整字段）
+  -q, -SessionIdLike <检索词>        按 SessionId / Title / WorkspacePath 统一模糊筛选
+  -t, -TitleLike <标题词>            仅按 Title 模糊筛选
+  -o, -SortBy <LastActivity|WorkspacePath>   排序方式：LastActivity 按最近活动、WorkspacePath 按工作区路径（默认 LastActivity）
+  -n, -Limit <N>                     限制输出条数（默认 20；也可直接写数字，如 asq codex 50）
+  -AsJson                            输出 JSON（多条为数组、单条为对象）
+  -WorkspacePath <路径>              指定筛选 session 工作区的路径（默认当前 PowerShell 路径）
+  -h, -?, --help                     显示本帮助
+  -v, -Version                       显示版本号
+
+来源专属选项:
+  -s, -SessionId <sessionId>         查看指定会话完整详情（忽略路径过滤；仅 claude / workbuddy）
+  -RootPath <路径>                   Codex / Claude 数据根目录（仅 codex / claude；默认 ~/.codex 或 ~/.claude）
+  -DbPath <路径>                     WorkBuddy 数据库文件路径（仅 workbuddy；默认 ~/.workbuddy/workbuddy.db）
+  -Type <任务|空间>                   按派生类型筛选（仅 workbuddy：任务 / 空间）
 '@
 }
 
@@ -1521,7 +1520,7 @@ if ($forceHelp) {
 }
 
 if ($forceVersion) {
-    Write-Output 'v1.0.0'
+    Write-Output 'v1.1.0'
     exit 0
 }
 
@@ -1529,9 +1528,9 @@ if ($forceVersion) {
 $allowedSources = @('codex', 'claude', 'workbuddy')
 if ([string]::IsNullOrWhiteSpace($Source) -or ($allowedSources -notcontains $Source)) {
     if ([string]::IsNullOrWhiteSpace($Source)) {
-        Write-Output '请使用 -Source codex|claude|workbuddy 指定查询来源（详见 帮助查看参数使用介绍）。'
+        Write-Output '缺少查询来源：请用 -Source codex|claude|workbuddy 或首个位置参数（如 asq codex）指定查询对象。运行 asq -h 查看完整帮助。'
     } else {
-        Write-Output ('不支持的查询来源: {0}。请使用 -Source codex|claude|workbuddy 指定查询来源（详见 帮助查看参数使用介绍）。' -f $Source)
+        Write-Output ('不支持的查询来源: {0}。可用来源: codex / claude / workbuddy（如 asq codex）。运行 asq -h 查看完整帮助。' -f $Source)
     }
     exit 1
 }
@@ -1557,7 +1556,7 @@ if ($Limit -is [string] -and -not [string]::IsNullOrWhiteSpace($Limit) -and $Lim
     if ($usedSwitches.Count -eq 0) {
         $usedSwitches = @('-n')
     }
-    Write-Output ('{0} 参数错误，详见 帮助查看参数使用介绍' -f ($usedSwitches -join '、'))
+    Write-Output ('{0} 参数错误：只接受数字条数（如 asq codex 50 或 -n 50）。运行 asq -h 查看完整参数说明。' -f ($usedSwitches -join '、'))
     exit 1
 }
 
@@ -1567,12 +1566,6 @@ try {
     throw "Limit must be an integer. Use 'asq -Source $Source 50' or 'asq -Source $Source -n 50'."
 }
 
-if ($SortBy -eq 'time') {
-    $SortBy = 'LastActivity'
-}
-if ($SortBy -eq 'path' -or $SortBy -eq 'cwd') {
-    $SortBy = 'WorkspacePath'
-}
 $hasQuery = -not [string]::IsNullOrWhiteSpace($SessionIdLike)
 $hasTitleQuery = -not [string]::IsNullOrWhiteSpace($TitleLike)
 $hasSessionId = -not [string]::IsNullOrWhiteSpace($SessionId)
@@ -1637,7 +1630,7 @@ if ($hasSessionId -and ($Source -eq 'claude' -or $Source -eq 'workbuddy')) {
             Write-Output ('{0,-17} {1}' -f 'Title:', $session.Title)
             Write-Output ('{0,-17} {1}' -f 'WorkspacePath:', $session.WorkspacePath)
             Write-Output ('{0,-17} {1}' -f 'RoutingName:', $session.RoutingName)
-            Write-Output ('{0,-17} {1}' -f 'ModelId:', $session.ModelId)
+            Write-Output ('{0,-17} {1}' -f 'Model:', $session.Model)
             Write-Output ('{0,-17} {1}' -f 'Tokens:', $session.Tokens.ToString('N0'))
             Write-Output ('{0,-17} {1}' -f 'InputTokens:', $session.InputTokens.ToString('N0'))
             Write-Output ('{0,-17} {1}' -f 'OutputTokens:', $session.OutputTokens.ToString('N0'))
@@ -1801,7 +1794,7 @@ if ($AsJson) {
                 LastActivity   = $_.LastActivity.ToString('yyyy-MM-dd HH:mm:ss')
                 MessageCount   = $_.MessageCount
                 RoutingName    = $_.RoutingName
-                ModelId        = $_.ModelId
+                Model        = $_.Model
                 Tokens         = $_.Tokens
                 InputTokens    = $_.InputTokens
                 OutputTokens   = $_.OutputTokens
@@ -1865,7 +1858,7 @@ if ($ShowCommands) {
             Write-Output ('{0,-17} {1}' -f 'Title:', $session.Title)
             Write-Output ('{0,-17} {1}' -f 'WorkspacePath:', $session.WorkspacePath)
             Write-Output ('{0,-17} {1}' -f 'RoutingName:', $session.RoutingName)
-            Write-Output ('{0,-17} {1}' -f 'ModelId:', $session.ModelId)
+            Write-Output ('{0,-17} {1}' -f 'Model:', $session.Model)
             Write-Output ('{0,-17} {1}' -f 'Tokens:', $session.Tokens.ToString('N0'))
             Write-Output ('{0,-17} {1}' -f 'InputTokens:', $session.InputTokens.ToString('N0'))
             Write-Output ('{0,-17} {1}' -f 'OutputTokens:', $session.OutputTokens.ToString('N0'))
@@ -1944,9 +1937,9 @@ if ($Source -eq 'codex') {
         Write-Output $line
     }
 } elseif ($Source -eq 'claude') {
-    $widths = @{ SessionId = 36; LastActivity = 16; ModelId = 24; Tokens = 14 }
+    $widths = @{ SessionId = 36; LastActivity = 16; Model = 24; Tokens = 14 }
     $numColumns = 6
-    $fixedWidth = $widths.SessionId + $widths.LastActivity + $widths.ModelId + $widths.Tokens + ($numColumns - 1)
+    $fixedWidth = $widths.SessionId + $widths.LastActivity + $widths.Model + $widths.Tokens + ($numColumns - 1)
     $remainingWidth = [Math]::Max($consoleWidth - $fixedWidth, 56)
     $titleWidth = [Math]::Max([Math]::Min(40, [Math]::Floor($remainingWidth * 0.45)), 20)
     $workspaceWidth = [Math]::Max($remainingWidth - $titleWidth - 2, 20)
@@ -1957,11 +1950,11 @@ if ($Source -eq 'codex') {
         (Format-SessionCell -Text 'SessionId' -Width $widths.SessionId), `
         (Format-SessionCell -Text 'LastActivity' -Width $widths.LastActivity), `
         (Format-SessionCell -Text 'Title' -Width $widths.Title), `
-        (Format-SessionCell -Text 'ModelId' -Width $widths.ModelId), `
+        (Format-SessionCell -Text 'Model' -Width $widths.Model), `
         (Format-SessionCell -Text 'Tokens' -Width $widths.Tokens -Align right), `
         (Format-SessionCell -Text 'WorkspacePath' -Width $widths.WorkspacePath)
     $separator = '{0} {1} {2} {3} {4} {5}' -f `
-        ('-' * $widths.SessionId), ('-' * $widths.LastActivity), ('-' * $widths.Title), ('-' * $widths.ModelId), ('-' * $widths.Tokens), ('-' * $widths.WorkspacePath)
+        ('-' * $widths.SessionId), ('-' * $widths.LastActivity), ('-' * $widths.Title), ('-' * $widths.Model), ('-' * $widths.Tokens), ('-' * $widths.WorkspacePath)
     if ($hasAnyQuery) { Write-Output ('检索范围: {0}' -f $searchScope) }
     Write-Output $header
     Write-Output $separator
@@ -1970,7 +1963,7 @@ if ($Source -eq 'codex') {
             (Format-SessionCell -Text $session.SessionId -Width $widths.SessionId), `
             (Format-SessionCell -Text ($session.LastActivity.ToString('yyyy-MM-dd HH:mm')) -Width $widths.LastActivity), `
             (Format-SessionCell -Text $session.Title -Width $widths.Title), `
-            (Format-SessionCell -Text $session.ModelId -Width $widths.ModelId), `
+            (Format-SessionCell -Text $session.Model -Width $widths.Model), `
             (Format-SessionCell -Text ($session.Tokens.ToString('N0')) -Width $widths.Tokens -Align right), `
             (Format-SessionCell -Text $session.WorkspacePath -Width $widths.WorkspacePath -Mode 'middle')
         Write-Output $line
