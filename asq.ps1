@@ -1,6 +1,6 @@
 <#
 AgentsSessionQuery 统一命令（规划 1 单命令重构）
-版本: v1.1.0
+版本: v1.1.1
 更新日期: 2026-08-31
 本命令是 OpenAI Codex / Claude Code / WorkBuddy 三客户端会话记录的统一查询入口：
   - 通过 -Source codex|claude|workbuddy 选择查询对象；来源也可写为第一个位置参数（asq codex -g）；
@@ -1449,7 +1449,7 @@ asq - 本机 Codex / Claude / WorkBuddy 历史会话统一查询命令
   asq -Source codex -AsJson          # -AsJson：输出 JSON（多条为数组、单条为对象）
   asq codex 50                       # 位置参数 50 = 显示条数（等价于 -n 50）
   asq -h                             # 帮助：-h / -? / --help / help 均可
-  asq -v                             # 版本号：-v / -Version（v1.1.0）
+  asq -v                             # 版本号：-v / -Version（v1.1.1）
 
 通用选项:
   -Source <codex|claude|workbuddy>   显式指定来源（等价于首个位置参数写法，如 asq codex）
@@ -1520,7 +1520,7 @@ if ($forceHelp) {
 }
 
 if ($forceVersion) {
-    Write-Output 'v1.1.0'
+    Write-Output 'v1.1.1'
     exit 0
 }
 
@@ -1614,6 +1614,11 @@ try {
 } catch {
 }
 $currentWorkspace = $currentWorkspace.TrimEnd('\', '/')
+$pathSeparator = [System.IO.Path]::DirectorySeparatorChar
+$normalizedCurrentWorkspace = $currentWorkspace.Replace(
+    [System.IO.Path]::AltDirectorySeparatorChar,
+    $pathSeparator
+)
 
 if ($hasSessionId -and ($Source -eq 'claude' -or $Source -eq 'workbuddy')) {
     $targetId = $SessionId.Trim().ToLowerInvariant()
@@ -1680,12 +1685,15 @@ if (-not $Global) {
                 if ([string]::IsNullOrWhiteSpace($_.WorkspacePath)) {
                     return $false
                 }
-                $sessionWorkspace = $_.WorkspacePath.TrimEnd('\', '/')
+                $sessionWorkspace = $_.WorkspacePath.TrimEnd('\', '/').Replace(
+                    [System.IO.Path]::AltDirectorySeparatorChar,
+                    $pathSeparator
+                )
                 (
-                    $sessionWorkspace.Equals($currentWorkspace, [System.StringComparison]::OrdinalIgnoreCase) -or
+                    $sessionWorkspace.Equals($normalizedCurrentWorkspace, [System.StringComparison]::OrdinalIgnoreCase) -or
                     (
                         $IncludeSubdirectories -and
-                        $sessionWorkspace.StartsWith($currentWorkspace + '\', [System.StringComparison]::OrdinalIgnoreCase)
+                        $sessionWorkspace.StartsWith($normalizedCurrentWorkspace + $pathSeparator, [System.StringComparison]::OrdinalIgnoreCase)
                     )
                 )
             }
