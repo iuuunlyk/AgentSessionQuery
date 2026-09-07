@@ -6,6 +6,17 @@
 
 套件采用统一发布版本（v1.x.y）；各工具（Codex / Claude / WorkBuddy）的内部组件版本演进与历史明细见 `CHANGELOG.private.md`（本地，不随开源发布）。
 
+## [1.1.2] - 2026-09-07
+
+### Fixed（修复）
+
+- 采纳外部贡献者 [@liyangbing](https://github.com/liyangbing) 的路径匹配修复（社区 [PR #1](https://github.com/iuuunlyk/AgentSessionQuery/pull/1)，pull request，拉取请求）：`-IncludeSubdirectories` 过滤原硬编码 Windows 反斜杠 `\`，改为以 `[System.IO.Path]::DirectorySeparatorChar` 对当前工作区与会话工作区路径做平台无关归一化（兼容 `AltDirectorySeparatorChar`），使 `-r` 目录分隔符处理更健壮。**注意**：asq 仍仅面向 Windows 设计（见 README「开发者说明」），本 PR 属防御性加固，不表示已支持 macOS / Linux。
+
+### Changed（变更）
+
+- 版本号改为单一真源：新增 `$ScriptVersion` 变量（当前 `v1.1.2`），`asq -h` 帮助文本的 `-v` 说明与 `-v` / `-Version` 输出均引用该变量；发版时仅改一处即可，消除此前三处硬编码版本字面易遗漏的问题。`asq -v` 现输出 `v1.1.2`。
+- 明确运行平台定向（Windows）：README 新增「操作系统」环境要求、「开发者说明」节与「已知限制」条目，明确 asq 仅面向 Windows 设计，macOS / Linux 不在支持范围；[PR #1](https://github.com/iuuunlyk/AgentSessionQuery/pull/1)（pull request，拉取请求）的路径分隔符归一化属防御性加固，不表示已支持上述平台。
+
 ## [1.1.0] - 2026-09-03
 
 ### Changed（变更）
@@ -31,6 +42,7 @@
 - 统一命令 `asq`：以 `-Source codex|claude|workbuddy` 或来源位置参数（如 `asq codex -g`）查询；`-v` / `-Version` 显示版本号。
 - `session-profile-aliases.ps1`：将三条命令注册为 PowerShell Profile 同名函数，新开终端即可直接使用。
 
+[v1.1.2]: https://github.com/iuuunlyk/AgentSessionQuery/releases/tag/v1.1.2
 [v1.1.1]: https://github.com/iuuunlyk/AgentSessionQuery/releases/tag/v1.1.1
 [v1.1.0]: https://github.com/iuuunlyk/AgentSessionQuery/releases/tag/v1.1.0
 [v1.0.0]: https://github.com/iuuunlyk/AgentSessionQuery/releases/tag/v1.0.0

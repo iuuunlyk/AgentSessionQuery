@@ -18,7 +18,7 @@ AgentsSessionQuery 源于在 Codex / Claude / WorkBuddy 多客户端间统一查
 - **脚本化友好**：`-AsJson` 输出完整字段合约，便于管道与集成。
 - **中文友好**：表格按 Unicode 文本元素计算显示宽度，长标题/长路径中间截断为 `...`，中英文混排不错位。
 - **Token 统计**：列表视图 `Tokens` 列（会话累计 token，千分位，**右对齐**）；`-c` 详细视图与 `-AsJson` 输出完整 6 字段——`Tokens` / `InputTokens` / `OutputTokens` / `CacheReadTokens` / `CacheWriteTokens` / `ReasoningTokens`（codex / claude / **WorkBuddy** 口径一致）；`Tokens` 均等于各分量之和（不读厂商 `total_tokens`），Claude 额外覆盖 `agent-*` 子智能体会话，WorkBuddy 额外覆盖软删除与 `agent-*` 子智能体会话。逐会话 6 字段口径一致、全局总量校验闭合。
-- **可移植与健壮**：数据源三态检测（未安装 / 已装未用 / 已用）分别给出友好提示并 `exit 0`；在 Windows PowerShell 5.1 下运行会温和告警建议改用 PowerShell 7（避免中文乱码）；所有数据源经 `$HOME` 解析、零硬写用户名/盘符，WorkBuddy 的 Python 运行时路径版本无关（扫描 `versions/*` 取最高版），复制到别的机器也能运行。
+- **可移植与健壮**：数据源三态检测（未安装 / 已装未用 / 已用）分别给出友好提示并 `exit 0`；在 Windows PowerShell 5.1 下运行会温和告警建议改用 PowerShell 7（避免中文乱码）；所有数据源经 `$HOME` 解析、零硬写用户名/盘符，WorkBuddy 的 Python 运行时路径版本无关（扫描 `versions/*` 取最高版），复制到别的 **Windows** 机器也能运行（跨 macOS / Linux 不在支持范围）。
 
 ---
 
@@ -40,6 +40,7 @@ flowchart LR
 ## 环境要求
 
 - **必需**：PowerShell 7（`pwsh`）。在 Windows PowerShell 5.1（Desktop 版）下运行会输出告警，且 5.1 对含中文的测试文本解析存在乱码风险，建议优先使用 `pwsh`。
+- **操作系统**：asq 面向 Windows 设计，推荐在 Windows 10 / 11 的 PowerShell 7（`pwsh`）下运行；macOS / Linux 未经设计与验证，不保证可用。
 - **可选（缺失即优雅降级）**：
   - `claude` / `codex` CLI：仅影响「打印的恢复命令」能否真正执行，不影响列表功能；
   - Python：仅 WorkBuddy 工具在解析 transcript 与打开 SQLite 时需要（优先 `python`/`py` 探测 PATH，最后回退本机 `$HOME` 相对路径 `~/.workbuddy/binaries/python/versions/*/python.exe` 取最高版）。
@@ -67,13 +68,14 @@ pwsh -File ./asq.ps1 -Source workbuddy -g    # 命名参数形式
 
 把 `session-profile-aliases.ps1` 点加载进 PowerShell Profile，注册出 `asq` 函数，之后新开终端即可直接用 `asq codex -g` 这类形式。
 
-**建议安装路径（按平台，任选其一固定放置仓库）**：
+**建议安装路径（仅 Windows，任选其一固定放置仓库）**：
 
 | 平台 | 推荐路径 | 说明 |
 | --- | --- | --- |
 | Windows (pwsh 用户级) | `~\Documents\PowerShell\SessionTools\` | 与 pwsh `$PROFILE` 同体系，无需管理员 |
 | Windows (通用) | `~\scripts\` 或 `~/.local/scripts/` | 任意固定路径，Profile 指向它 |
-| Linux / macOS | `~/.local/share/scripts/` | 与 `$HOME` 体系一致 |
+
+> 注：以上路径示例仅针对 Windows；macOS / Linux 不在 asq 支持范围（见「环境要求 → 操作系统」与「已知限制」）。
 
 **接入步骤**（在 `$PROFILE` 末尾追加一行，幂等）：
 
@@ -250,12 +252,28 @@ flowchart TD
 - `RoutingName` 为当前 Claude 全局配置的原始 `model` id（如 `claude-fable-5[1m]`），由 `~/.claude/settings.json` 的 `model` 字段直接取值、未经任何外部翻译（v1.2.5 起已移除对 `route_name.py` / `cc-switch.db` 的依赖，不再出现 `k3-256k` 这类友好路由名）；属全局配置、各会话相同，与逐会话的 `Model`（该会话实际跑过的真实模型）是两回事。
 - WorkBuddy 无 CLI resume 入口，`asq workbuddy` 不提供恢复命令。
 - **Token 统计属「尽力而为」**：逐会话 6 字段（Tokens / Input / Output / CacheRead / CacheWrite / Reasoning）由 transcript 解析得出；若某会话 transcript 未上报或字段名未被兼容表覆盖，对应值为 `0`；兼容表已覆盖常见蛇形/驼峰/`<synthetic>`/`openrouter/free` 等变体。
+- **运行平台定向（Windows）**：asq 面向 Windows 设计，macOS / Linux 未经设计与验证，不保证可用；社群拉取请求（pull request，PR）#1 的 `-IncludeSubdirectories` 路径分隔符归一化属于防御性加固，**不表示**已支持 macOS / Linux（详见「开发者说明」）。
 
 ---
 
 ## 范围说明
 
 本 README 聚焦 AgentsSessionQuery 的统一会话查询命令 `asq`（`asq.ps1` 引擎 + `session-profile-aliases.ps1` 注册的 `asq` 函数），覆盖 codex / claude / workbuddy 三数据源。
+
+---
+
+## 开发者说明
+
+> 本节面向**开发者 / 贡献者**，说明 asq 的平台定向与跨平台相关边界；普通用户见「环境要求 → 操作系统」与「已知限制」。
+
+- **运行目标为 Windows**：asq 仅面向 Windows 设计，macOS / Linux 不在支持范围，未经设计与验证，不保证可用。
+- **Windows 专属依赖（代码证据）**：
+  - `asq.ps1` 第 80 行：在 Windows PowerShell 5.1 下运行时输出专属告警（`建议使用 PowerShell 7 (pwsh) 运行本工具；当前为 Windows PowerShell 5.1，中文可能乱码。`）。
+  - `asq.ps1` 第 1325 行：`if ($py -and $py -match 'WindowsApps')` —— 探测 Windows 应用商店（WindowsApps）Python 安装路径。
+  - `asq.ps1` 第 1335 行：`$cand = Join-Path $_.FullName 'python.exe'` —— Python 可执行文件名写死 `.exe` 扩展名（Windows 专属）。
+  - WorkBuddy 数据源依赖本机 Python 运行时：上述 `.exe` 探测与 `WindowsApps` 路径均指向 Windows 环境，macOS / Linux 无对应路径。
+- **社群拉取请求（pull request，PR）#1 的边界**：该 PR 的 `-IncludeSubdirectories` 路径分隔符归一化仅修复 Windows 下目录分隔符（`\` 与 `/`）的匹配逻辑，**未触及 Python 运行时发现路径**，故属于防御性加固，**不表示已支持 macOS / Linux**。
+- **真正跨平台支持属范围外**：若需支持 macOS / Linux，须独立评估（Python 运行时发现、路径处理、PowerShell 7 跨平台行为等），不在当前版本设计与验证范围内。
 
 ---
 

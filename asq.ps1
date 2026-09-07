@@ -1,6 +1,6 @@
 <#
 AgentsSessionQuery 统一命令（规划 1 单命令重构）
-版本: v1.1.0
+版本: 以 $ScriptVersion 变量为准（运行 asq -v 查询当前版本）
 更新日期: 2026-08-31
 本命令是 OpenAI Codex / Claude Code / WorkBuddy 三客户端会话记录的统一查询入口：
   - 通过 -Source codex|claude|workbuddy 选择查询对象；来源也可写为第一个位置参数（asq codex -g）；
@@ -72,6 +72,9 @@ param(
 )
 
 Set-StrictMode -Version Latest
+
+# 版本号单一真源：发版时仅改此处；帮助文本与 -v/-Version 输出均引用本变量
+$ScriptVersion = 'v1.1.2'
 
 if ($PSVersionTable.PSEdition -eq 'Desktop') {
     Write-Warning '建议使用 PowerShell 7 (pwsh) 运行本工具；当前为 Windows PowerShell 5.1，中文可能乱码。'
@@ -1427,7 +1430,7 @@ function Get-WorkBuddySessions {
 # 统一帮助
 # ============================================================================
 function Show-AgentsSessionQueryHelp {
-    @'
+    @"
 asq - 本机 Codex / Claude / WorkBuddy 历史会话统一查询命令
 
 用法:
@@ -1449,7 +1452,7 @@ asq - 本机 Codex / Claude / WorkBuddy 历史会话统一查询命令
   asq -Source codex -AsJson          # -AsJson：输出 JSON（多条为数组、单条为对象）
   asq codex 50                       # 位置参数 50 = 显示条数（等价于 -n 50）
   asq -h                             # 帮助：-h / -? / --help / help 均可
-  asq -v                             # 版本号：-v / -Version（v1.1.0）
+  asq -v                             # 版本号：-v / -Version（$ScriptVersion）
 
 通用选项:
   -Source <codex|claude|workbuddy>   显式指定来源（等价于首个位置参数写法，如 asq codex）
@@ -1470,7 +1473,7 @@ asq - 本机 Codex / Claude / WorkBuddy 历史会话统一查询命令
   -RootPath <路径>                   Codex / Claude 数据根目录（仅 codex / claude；默认 ~/.codex 或 ~/.claude）
   -DbPath <路径>                     WorkBuddy 数据库文件路径（仅 workbuddy；默认 ~/.workbuddy/workbuddy.db）
   -Type <任务|空间>                   按派生类型筛选（仅 workbuddy：任务 / 空间）
-'@
+"@
 }
 
 # ============================================================================
@@ -1520,7 +1523,7 @@ if ($forceHelp) {
 }
 
 if ($forceVersion) {
-    Write-Output 'v1.1.0'
+    Write-Output $ScriptVersion
     exit 0
 }
 
@@ -1614,6 +1617,11 @@ try {
 } catch {
 }
 $currentWorkspace = $currentWorkspace.TrimEnd('\', '/')
+$pathSeparator = [System.IO.Path]::DirectorySeparatorChar
+$normalizedCurrentWorkspace = $currentWorkspace.Replace(
+    [System.IO.Path]::AltDirectorySeparatorChar,
+    $pathSeparator
+)
 
 if ($hasSessionId -and ($Source -eq 'claude' -or $Source -eq 'workbuddy')) {
     $targetId = $SessionId.Trim().ToLowerInvariant()
@@ -1680,12 +1688,15 @@ if (-not $Global) {
                 if ([string]::IsNullOrWhiteSpace($_.WorkspacePath)) {
                     return $false
                 }
-                $sessionWorkspace = $_.WorkspacePath.TrimEnd('\', '/')
+                $sessionWorkspace = $_.WorkspacePath.TrimEnd('\', '/').Replace(
+                    [System.IO.Path]::AltDirectorySeparatorChar,
+                    $pathSeparator
+                )
                 (
-                    $sessionWorkspace.Equals($currentWorkspace, [System.StringComparison]::OrdinalIgnoreCase) -or
+                    $sessionWorkspace.Equals($normalizedCurrentWorkspace, [System.StringComparison]::OrdinalIgnoreCase) -or
                     (
                         $IncludeSubdirectories -and
-                        $sessionWorkspace.StartsWith($currentWorkspace + '\', [System.StringComparison]::OrdinalIgnoreCase)
+                        $sessionWorkspace.StartsWith($normalizedCurrentWorkspace + $pathSeparator, [System.StringComparison]::OrdinalIgnoreCase)
                     )
                 )
             }
