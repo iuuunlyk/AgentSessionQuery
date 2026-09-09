@@ -6,6 +6,17 @@
 
 套件采用统一发布版本（v1.x.y）；各工具（Codex / Claude / WorkBuddy）的内部组件版本演进与历史明细见 `CHANGELOG.private.md`（本地，不随开源发布）。
 
+## [1.2.0] - 2026-09-09
+
+### Added（新增）
+
+- 新增通用选项 `-d` / `-WithinDays <N|Nd|关键字>`（2026-09-09）：按会话「最后活动时间（LastActivity）」筛选，如「今日活动的会话」。三数据源（codex / claude / workbuddy）均可用，作用于列表视图（默认列表、`-c`、`-AsJson`），对 `-s` 单会话详情视图不适用。
+  - 口径：`today` = 今日（自然日 00:00 起）；`yesterday` = 昨日；`week` = 本周（自然周，本周一 00:00 起，周一为一周之首）；`month` = 本月（自然月，1 号 00:00 起）；数字 `7`/`7d`/`N`/`Nd` = 滚动近 N 天。时间窗口均按本地时间计算。
+  - 与既有筛选正交：与路径/`-g`、`-q`/`-t` 检索、`-Type`、`-SortBy`、`-Limit` 组合使用；筛选在排序与条数截断之前执行。
+  - 容错：非数字/关键字、小于 1 的天数统一中文报错并 exit 1；空结果走既有人话兜底并回显时间筛选条件。
+  - 边界：LastActivity 为「时间未知」（MinValue 哨兵）的会话一律不命中。
+- 新增本地测试覆盖（`tests/` 不随开源发布）：按运行当天动态生成自然日/周/月边界锚点会话，断言 today / yesterday / week / month / 滚动 N 的包含与排除，及非法输入的 exit 1 与中文报错。
+
 ## [1.1.2] - 2026-09-07
 
 ### Fixed（修复）
@@ -42,6 +53,7 @@
 - 统一命令 `asq`：以 `-Source codex|claude|workbuddy` 或来源位置参数（如 `asq codex -g`）查询；`-v` / `-Version` 显示版本号。
 - `session-profile-aliases.ps1`：将三条命令注册为 PowerShell Profile 同名函数，新开终端即可直接使用。
 
+[v1.2.0]: https://github.com/iuuunlyk/AgentSessionQuery/releases/tag/v1.2.0
 [v1.1.2]: https://github.com/iuuunlyk/AgentSessionQuery/releases/tag/v1.1.2
 [v1.1.1]: https://github.com/iuuunlyk/AgentSessionQuery/releases/tag/v1.1.1
 [v1.1.0]: https://github.com/iuuunlyk/AgentSessionQuery/releases/tag/v1.1.0

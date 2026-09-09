@@ -59,6 +59,12 @@ param(
     [ValidateSet('任务', '空间')]
     [string]$Type,
 
+    # 按最后活动时间筛选：接受整数天数（7 / 7d）与关键字（today / yesterday / week / month）。
+    # 用 [object] 而非 [string]：与 -Limit 同思路，让 -d 7 绑定为 int、-d 7d 绑定为 string，统一 ToString() 后校验。
+    # 不用 ValidateSet：会让 7d / 30 这类输入直接崩掉。
+    [Alias('d')]
+    [object]$WithinDays = $null,
+
     [Alias('h')]
     [switch]$Help,
 
@@ -74,7 +80,7 @@ param(
 Set-StrictMode -Version Latest
 
 # 版本号单一真源：发版时仅改此处；帮助文本与 -v/-Version 输出均引用本变量
-$ScriptVersion = 'v1.1.2'
+$ScriptVersion = 'v1.2.0'
 
 if ($PSVersionTable.PSEdition -eq 'Desktop') {
     Write-Warning '建议使用 PowerShell 7 (pwsh) 运行本工具；当前为 Windows PowerShell 5.1，中文可能乱码。'
@@ -1448,6 +1454,7 @@ asq - 本机 Codex / Claude / WorkBuddy 历史会话统一查询命令
   asq codex -c                       # -c / -ShowCommands：详细视图（完整字段 + resume 命令）
   asq codex -q scripts               # -q：在 SessionId / Title / WorkspacePath 中模糊检索
   asq workbuddy -Type 任务           # -Type：按派生类型筛选（仅 workbuddy）
+  asq codex -g -d today              # -d / -WithinDays：只看今日有活动的会话
   asq claude -s <sessionId>          # -s：单会话完整详情（仅 claude / workbuddy）
   asq -Source codex -AsJson          # -AsJson：输出 JSON（多条为数组、单条为对象）
   asq codex 50                       # 位置参数 50 = 显示条数（等价于 -n 50）
@@ -1463,6 +1470,10 @@ asq - 本机 Codex / Claude / WorkBuddy 历史会话统一查询命令
   -t, -TitleLike <标题词>            仅按 Title 模糊筛选
   -o, -SortBy <LastActivity|WorkspacePath>   排序方式：LastActivity 按最近活动、WorkspacePath 按工作区路径（默认 LastActivity）
   -n, -Limit <N>                     限制输出条数（默认 20；也可直接写数字，如 asq codex 50）
+  -d, -WithinDays <N|Nd|关键字>      按最后活动时间筛选（默认不筛选）。写法：7 或 7d = 滚动近 7 天，
+                                    N / Nd = 滚动近 N 天；today = 今日；yesterday = 昨日；
+                                    week = 本周（周一起）；month = 本月（1 号起）
+                                    （时间未知的会话一律排除）
   -AsJson                            输出 JSON（多条为数组、单条为对象）
   -WorkspacePath <路径>              指定筛选 session 工作区的路径（默认当前 PowerShell 路径）
   -h, -?, --help                     显示本帮助
@@ -1470,6 +1481,7 @@ asq - 本机 Codex / Claude / WorkBuddy 历史会话统一查询命令
 
 来源专属选项:
   -s, -SessionId <sessionId>         查看指定会话完整详情（忽略路径过滤；仅 claude / workbuddy）
+                                    注：-s 为单会话详情视图，-d / -WithinDays 对其不适用
   -RootPath <路径>                   Codex / Claude 数据根目录（仅 codex / claude；默认 ~/.codex 或 ~/.claude）
   -DbPath <路径>                     WorkBuddy 数据库文件路径（仅 workbuddy；默认 ~/.workbuddy/workbuddy.db）
   -Type <任务|空间>                   按派生类型筛选（仅 workbuddy：任务 / 空间）
@@ -1552,6 +1564,7 @@ if ($Limit -is [string] -and -not [string]::IsNullOrWhiteSpace($Limit) -and $Lim
         AsJson              = '-AsJson'
         Help                = '-h'
         Type                = '-Type'
+        WithinDays          = '-d'
     }
     $usedSwitches = @(foreach ($key in $PSBoundParameters.Keys) {
         if ($switchShortNames.ContainsKey($key)) { $switchShortNames[$key] }
@@ -1569,11 +1582,65 @@ try {
     throw "Limit must be an integer. Use 'asq -Source $Source 50' or 'asq -Source $Source -n 50'."
 }
 
+# 解析 -WithinDays / -d：按会话「最后活动时间（LastActivity）」筛选，例如「今日活动的会话」。
+#   接受形态：整数天数（7 / 7d）、关键字（today / yesterday / week / month）。
+#   产出闭开区间 [withinStart, withinEnd)：两端为 $null 表示该侧不设界；withinStart 为 $null 即未启用筛选。
+#   口径：today/yesterday 取自然日 00:00；week 取自然周（本周一 00:00 起，周一为一周之首）；
+#         month 取自然月（本月 1 号 00:00 起）；数字 N / Nd 取滚动近 N 天。
+#   时区：统一用 Get-Date 本地时间，不与 UtcNow 混用。
+$withinStart = $null
+$withinEnd = $null
+if ($null -ne $WithinDays -and -not [string]::IsNullOrWhiteSpace($WithinDays.ToString())) {
+    $withinToken = $WithinDays.ToString().Trim().ToLowerInvariant()
+    $now = Get-Date
+    switch -Regex ($withinToken) {
+        '^today$' {
+            $withinStart = $now.Date
+            $withinEnd = $now.Date.AddDays(1)
+            break
+        }
+        '^yesterday$' {
+            $withinStart = $now.Date.AddDays(-1)
+            $withinEnd = $now.Date
+            break
+        }
+        '^week$' {
+            # 自然周：本周一 00:00（含）～ 下周一 00:00（不含）。DayOfWeek：周日=0…周六=6，(dow+6)%7 得距本周一的天数。
+            $daysSinceMonday = ([int]$now.DayOfWeek + 6) % 7
+            $thisMonday = $now.Date.AddDays(-$daysSinceMonday)
+            $withinStart = $thisMonday
+            $withinEnd = $thisMonday.AddDays(7)
+            break
+        }
+        '^month$' {
+            # 自然月：本月 1 号 00:00（含）～ 下月 1 号 00:00（不含）。
+            $monthStart = Get-Date -Year $now.Year -Month $now.Month -Day 1 -Hour 0 -Minute 0 -Second 0
+            $withinStart = $monthStart
+            $withinEnd = $monthStart.AddMonths(1)
+            break
+        }
+        '^(\d+)d?$' {
+            $withinDaysValue = [int]$Matches[1]
+            if ($withinDaysValue -lt 1) {
+                Write-Output ('-d 参数错误：天数需为不小于 1 的整数（收到 {0}）。可选写法：7 / 7d / today / yesterday / week / month。运行 asq -h 查看完整参数说明。' -f $withinToken)
+                exit 1
+            }
+            $withinStart = $now.AddDays(-$withinDaysValue)
+            break
+        }
+        default {
+            Write-Output ('-d 参数错误：只接受天数（7 / 7d）或关键字（today / yesterday / week / month），收到「{0}」。运行 asq -h 查看完整参数说明。' -f $withinToken)
+            exit 1
+        }
+    }
+}
+$hasWithinFilter = ($null -ne $withinStart)
+
 $hasQuery = -not [string]::IsNullOrWhiteSpace($SessionIdLike)
 $hasTitleQuery = -not [string]::IsNullOrWhiteSpace($TitleLike)
 $hasSessionId = -not [string]::IsNullOrWhiteSpace($SessionId)
 $hasTypeFilter = -not [string]::IsNullOrWhiteSpace($Type)
-$hasAnyQuery = $hasQuery -or $hasTitleQuery -or $hasTypeFilter
+$hasAnyQuery = $hasQuery -or $hasTitleQuery -or $hasTypeFilter -or $hasWithinFilter
 
 # 按 Source 选择采集函数与数据源目录
 $sourceLabel = $null
@@ -1728,6 +1795,21 @@ if ($hasTypeFilter -and $Source -eq 'workbuddy') {
     $sessions = @($sessions | Where-Object { $_.Type -eq $Type })
 }
 
+# 日期筛选：与 -Type 完全并列，且在排序与 Limit 截断之前执行。
+#   LastActivity 为 MinValue（时间未知，Codex 无此概念——它回退到文件 mtime）一律排除，避免 0001-01-01 误命中。
+if ($hasWithinFilter) {
+    $sessions = @(
+        $sessions | Where-Object {
+            $activityAt = $_.LastActivity
+            if ($null -eq $activityAt) { return $false }
+            if ($activityAt -le [datetime]::MinValue) { return $false }
+            if ($null -ne $withinStart -and $activityAt -lt $withinStart) { return $false }
+            if ($null -ne $withinEnd -and $activityAt -ge $withinEnd) { return $false }
+            $true
+        }
+    )
+}
+
 if ($SortBy -eq 'WorkspacePath') {
     $sessions = @(
         $sessions | Sort-Object `
@@ -1762,12 +1844,17 @@ if (@($sessions).Count -eq 0) {
         if ($hasTypeFilter) {
             Write-Output ('类型筛选: {0}' -f $Type)
         }
-        if ($hasAnyQuery) {
+        if ($hasWithinFilter) {
+            Write-Output ('时间筛选: 最后活动时间在 {0}' -f $WithinDays)
+        }
+        if ($hasQuery -or $hasTitleQuery) {
             if ($Global) {
                 Write-Output '建议：尝试缩短关键词，或改用更稳定的 Title 片段。'
             } else {
                 Write-Output '建议：尝试缩短关键词，或加 -g 在全局 session 中检索。'
             }
+        } elseif ($hasWithinFilter) {
+            Write-Output '建议：放宽时间范围（如 -d week / -d month）；当前路径下无结果时可加 -g 在全局 session 中检索。'
         }
         exit 0
     }

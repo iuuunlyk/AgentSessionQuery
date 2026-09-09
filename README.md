@@ -108,6 +108,10 @@ asq codex
 # 全局 Codex 会话（含 Tokens 列，右对齐）
 asq codex -g
 
+# 只看今日有活动的会话（-d / -WithinDays 按最后活动时间筛选）
+asq codex -g -d today
+asq claude -g -d week    # 本周（周一起）
+
 # 当前路径下最近 20 条 Claude 会话（含 Tokens 列）
 asq claude
 
@@ -139,11 +143,14 @@ asq -Source workbuddy -g -c
 | `-t <词>` | `-TitleLike` | 仅按 Title 模糊筛选 |
 | `-s <id>` | `-SessionId` | （仅 Claude / WorkBuddy）查看指定会话完整详情，跨项目查找 |
 | `-SortBy <字段>` | `-o` | `LastActivity`（默认）/ `WorkspacePath` |
+| `-WithinDays <N\|Nd\|关键字>` | `-d` | 按最后活动时间筛选：`today` 今日，`yesterday` 昨日，`week` 本周（周一起），`month` 本月（1 号起），`7` / `7d` / `N` 滚动近 N 天；默认不筛选 |
 | `-ShowCommands` | `-c` | 详细视图（含路径、恢复命令、分支、模式、消息数、**token 统计**等） |
 | `-AsJson` | — | 输出 JSON 字段合约（含完整 token 字段） |
 | `-Help` | `-h` / `-?` / `--help` | 显示帮助 |
 | `-Type <任务\|空间>` | — | （仅 WorkBuddy）按任务 / 空间筛选会话 |
 | `-DbPath <路径>` | — | （仅 WorkBuddy）指定 SQLite 数据库路径（默认 `~/.workbuddy/workbuddy.db`） |
+
+> **`-d` / `-WithinDays` 口径**：`today` / `yesterday` 按**自然日 00:00** 切分；`week` 为**自然周**（本周一 00:00 起，周一为一周之首）；`month` 为**自然月**（本月 1 号 00:00 起）；数字 `7` / `7d` / `N` 为**滚动近 N 天**。所有形态都取「不早于某时刻」的下界，因此时间未知的会话不会命中。`-d` 作用于列表视图，对 `-s` 单会话详情视图不适用。
 
 ---
 
@@ -199,7 +206,8 @@ flowchart TD
     S["① 扫描数据根<br/>Get-ChildItem -Recurse *.jsonl"] --> E["② 逐会话提取元数据<br/>cwd / title / model / lane / 末行时间 / token"]
     E --> F1{"③ 作用域过滤<br/>当前路径 / 子目录 / 全局"}
     F1 --> F2{"④ 模糊检索<br/>-q 三字段 / -t 仅标题"}
-    F2 --> O["⑤ 排序 LastActivity 倒序"]
+    F2 --> F3{"④b 日期筛选<br/>-d 按最后活动时间"}
+    F3 --> O["⑤ 排序 LastActivity 倒序"]
     O --> L["Limit 截断"]
     L --> R{"⑥ 输出格式"}
     R -->|默认| T["固定宽度表格（含 Tokens 列，右对齐）"]
@@ -253,6 +261,7 @@ flowchart TD
 - WorkBuddy 无 CLI resume 入口，`asq workbuddy` 不提供恢复命令。
 - **Token 统计属「尽力而为」**：逐会话 6 字段（Tokens / Input / Output / CacheRead / CacheWrite / Reasoning）由 transcript 解析得出；若某会话 transcript 未上报或字段名未被兼容表覆盖，对应值为 `0`；兼容表已覆盖常见蛇形/驼峰/`<synthetic>`/`openrouter/free` 等变体。
 - **运行平台定向（Windows）**：asq 面向 Windows 设计，macOS / Linux 未经设计与验证，不保证可用；社群拉取请求（pull request，PR）#1 的 `-IncludeSubdirectories` 路径分隔符归一化属于防御性加固，**不表示**已支持 macOS / Linux（详见「开发者说明」）。
+- **`-d` 依赖 `LastActivity` 的可信度**：Codex 在 `session_index.jsonl` 无对应记录时回退到 transcript 文件的修改时间（mtime）；`git checkout`、复制、解压等操作会刷新 mtime，可能使旧会话被判为「近期活动」。Claude 在 transcript 末行无 `timestamp` 时同样回退 mtime。
 
 ---
 
