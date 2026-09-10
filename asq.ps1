@@ -80,7 +80,7 @@ param(
 Set-StrictMode -Version Latest
 
 # 版本号单一真源：发版时仅改此处；帮助文本与 -v/-Version 输出均引用本变量
-$ScriptVersion = 'v1.2.0'
+$ScriptVersion = 'v1.2.1'
 
 if ($PSVersionTable.PSEdition -eq 'Desktop') {
     Write-Warning '建议使用 PowerShell 7 (pwsh) 运行本工具；当前为 Windows PowerShell 5.1，中文可能乱码。'
@@ -1622,14 +1622,14 @@ if ($null -ne $WithinDays -and -not [string]::IsNullOrWhiteSpace($WithinDays.ToS
         '^(\d+)d?$' {
             $withinDaysValue = [int]$Matches[1]
             if ($withinDaysValue -lt 1) {
-                Write-Output ('-d 参数错误：天数需为不小于 1 的整数（收到 {0}）。可选写法：7 / 7d / today / yesterday / week / month。运行 asq -h 查看完整参数说明。' -f $withinToken)
+                Write-Output ('-d 参数错误：天数需为不小于 1 的整数；本次输入：{0}。可选 7 / 7d（滚动近 N 天）、today、yesterday、week、month。运行 asq -h 查看完整参数说明。' -f $withinToken)
                 exit 1
             }
             $withinStart = $now.AddDays(-$withinDaysValue)
             break
         }
         default {
-            Write-Output ('-d 参数错误：只接受天数（7 / 7d）或关键字（today / yesterday / week / month），收到「{0}」。运行 asq -h 查看完整参数说明。' -f $withinToken)
+            Write-Output ('-d 参数错误：只接受天数（7 / 7d，滚动近 N 天）或关键字——today（今日）、yesterday（昨日）、week（本周，周一起）、month（本月，1 号起）；本次输入：{0}。运行 asq -h 查看完整参数说明。' -f $withinToken)
             exit 1
         }
     }

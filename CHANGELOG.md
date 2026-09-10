@@ -6,6 +6,12 @@
 
 套件采用统一发布版本（v1.x.y）；各工具（Codex / Claude / WorkBuddy）的内部组件版本演进与历史明细见 `CHANGELOG.private.md`（本地，不随开源发布）。
 
+## [1.2.1] - 2026-09-10
+
+### Fixed（修复）
+
+- 澄清 `-d` / `-WithinDays` 非法值的报错文案（2026-09-10）：原「…，收到「abc」。」的双层中文引号易被误读为标记或指令，改为「…；本次输入：abc。」；并为关键字补充中文释义（`week` 本周周一起、`month` 本月 1 号起），同时把「天数 < 1」一支的措辞与「非法值」一支统一。仅影响提示文案，参数行为与退出码（exit 1）不变。
+
 ## [1.2.0] - 2026-09-09
 
 ### Added（新增）
@@ -53,6 +59,7 @@
 - 统一命令 `asq`：以 `-Source codex|claude|workbuddy` 或来源位置参数（如 `asq codex -g`）查询；`-v` / `-Version` 显示版本号。
 - `session-profile-aliases.ps1`：将三条命令注册为 PowerShell Profile 同名函数，新开终端即可直接使用。
 
+[v1.2.1]: https://github.com/iuuunlyk/AgentSessionQuery/releases/tag/v1.2.1
 [v1.2.0]: https://github.com/iuuunlyk/AgentSessionQuery/releases/tag/v1.2.0
 [v1.1.2]: https://github.com/iuuunlyk/AgentSessionQuery/releases/tag/v1.1.2
 [v1.1.1]: https://github.com/iuuunlyk/AgentSessionQuery/releases/tag/v1.1.1
