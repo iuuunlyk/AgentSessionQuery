@@ -1,10 +1,6 @@
 # Changelog
 
-本文件记录 **AgentsSessionQuery** 套件（统一命令 `asq`，按 `-Source` 覆盖 codex / claude / workbuddy 三数据源）的版本演进。v1.0.0 曾以三个子命令（`codex-sessions` / `claude-sessions` / `workbuddy-sessions`）为兼容入口，2026-09-03 起退役删除、仅保留统一命令 `asq`（见 [v1.1.0]）。
-
 格式遵循 [Keep a Changelog 2.0.0](https://keepachangelog.com/en/2.0.0/)，版本号遵循 [Semantic Versioning 2.0.0](https://semver.org/spec/v2.0.0.html)。
-
-套件采用统一发布版本（v1.x.y）；各工具（Codex / Claude / WorkBuddy）的内部组件版本演进与历史明细见 `CHANGELOG.private.md`（本地，不随开源发布）。
 
 ## [1.2.1] - 2026-09-10
 
