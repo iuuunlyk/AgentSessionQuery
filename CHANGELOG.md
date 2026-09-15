@@ -46,7 +46,7 @@
 
 - 修正 `asq.ps1` 头部版本注释：由 `v0.2.4` 改为 `v1.0.0`，与 `--version` / `-v` 实际输出一致（v1.0.0 起 `--version` 即输出 `v1.0.0`）。属注释修正，不影响运行行为与版本输出。
 
-## [v1.0.0] - 2026-09-01
+## [1.0.0] - 2026-09-01
 
 ### Added（新增）
 
@@ -58,6 +58,5 @@
 [v1.2.1]: https://github.com/iuuunlyk/AgentSessionQuery/releases/tag/v1.2.1
 [v1.2.0]: https://github.com/iuuunlyk/AgentSessionQuery/releases/tag/v1.2.0
 [v1.1.2]: https://github.com/iuuunlyk/AgentSessionQuery/releases/tag/v1.1.2
-[v1.1.1]: https://github.com/iuuunlyk/AgentSessionQuery/releases/tag/v1.1.1
 [v1.1.0]: https://github.com/iuuunlyk/AgentSessionQuery/releases/tag/v1.1.0
 [v1.0.0]: https://github.com/iuuunlyk/AgentSessionQuery/releases/tag/v1.0.0

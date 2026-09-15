@@ -277,9 +277,9 @@ flowchart TD
 
 - **运行目标为 Windows**：asq 仅面向 Windows 设计，macOS / Linux 不在支持范围，未经设计与验证，不保证可用。
 - **Windows 专属依赖（代码证据）**：
-  - `asq.ps1` 第 80 行：在 Windows PowerShell 5.1 下运行时输出专属告警（`建议使用 PowerShell 7 (pwsh) 运行本工具；当前为 Windows PowerShell 5.1，中文可能乱码。`）。
-  - `asq.ps1` 第 1325 行：`if ($py -and $py -match 'WindowsApps')` —— 探测 Windows 应用商店（WindowsApps）Python 安装路径。
-  - `asq.ps1` 第 1335 行：`$cand = Join-Path $_.FullName 'python.exe'` —— Python 可执行文件名写死 `.exe` 扩展名（Windows 专属）。
+  - `asq.ps1` 第 86 行：在 Windows PowerShell 5.1 下运行时输出专属告警（`建议使用 PowerShell 7 (pwsh) 运行本工具；当前为 Windows PowerShell 5.1，中文可能乱码。`）。
+  - `asq.ps1` 第 1331 行：`if ($py -and $py -match 'WindowsApps')` —— 探测 Windows 应用商店（WindowsApps）Python 安装路径。
+  - `asq.ps1` 第 1341 行：`$cand = Join-Path $_.FullName 'python.exe'` —— Python 可执行文件名写死 `.exe` 扩展名（Windows 专属）。
   - WorkBuddy 数据源依赖本机 Python 运行时：上述 `.exe` 探测与 `WindowsApps` 路径均指向 Windows 环境，macOS / Linux 无对应路径。
 - **社群拉取请求（pull request，PR）#1 的边界**：该 PR 的 `-IncludeSubdirectories` 路径分隔符归一化仅修复 Windows 下目录分隔符（`\` 与 `/`）的匹配逻辑，**未触及 Python 运行时发现路径**，故属于防御性加固，**不表示已支持 macOS / Linux**。
 - **真正跨平台支持属范围外**：若需支持 macOS / Linux，须独立评估（Python 运行时发现、路径处理、PowerShell 7 跨平台行为等），不在当前版本设计与验证范围内。
@@ -288,7 +288,7 @@ flowchart TD
 
 ## 测试说明
 
-本仓库的自动化测试（`tests/`）依赖本机真实的 `~/.claude`、`~/.codex` 与 `~/.workbuddy` 数据，**暂不随开源发布**：回归用例需在包含真实会话数据的本机环境运行，部分用例对真实数据排序敏感。开源交付物为：2 个脚本（`asq.ps1` / `session-profile-aliases.ps1`）+ 文档（`README.md` / `CHANGELOG.md` / `LICENSE` / `docs/v1.0.0-release-notes.md` 发布说明）。历史版本（v0.x）发布说明与内部开发文档不随开源发布。
+本仓库的自动化测试（`tests/`）依赖本机真实的 `~/.claude`、`~/.codex` 与 `~/.workbuddy` 数据，**暂不随开源发布**：回归用例需在包含真实会话数据的本机环境运行，部分用例对真实数据排序敏感。开源交付物为：2 个脚本（`asq.ps1` / `session-profile-aliases.ps1`）+ 文档（`README.md` / `CHANGELOG.md` / `LICENSE` / `docs/` 下各 `vX.Y.Z-release-notes.md` 发布说明）。历史版本（v0.x）发布说明与内部开发文档不随开源发布。
 
 ---
 
