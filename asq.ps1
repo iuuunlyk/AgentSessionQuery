@@ -7,6 +7,8 @@ AgentsSessionQuery 统一命令（规划 1 单命令重构）
   - 三套采集算法（含 token 解析口径）逐字移植自原三脚本，字段 schema 与输出格式零回归；
   - 统一参数容错（Limit 非数字 → 人话报错，列出本次开关含 -Source）、统一三态数据源检测、
     统一过滤/排序/Limit、统一 Format-SessionCell 截断对齐；按 Source 分发表 / -AsJson / -c 详情 / -s 详情。
+  - WorkBuddy 来源专属：Credits 列（积分消耗，取 session_usage.credit_json 全部请求值求和；
+    仅 workbuddy 有此数据源，无积分数据显示 '-'；列表 / 详情 / -AsJson 三视图一致）。
   - 原三脚本（codex-sessions.ps1 / claude-sessions.ps1 / workbuddy-sessions.ps1，转发 wrapper）已退役删除，
     套件收敛为单一命令 asq（session-profile-aliases.ps1 仅注册 asq 函数）。
 
@@ -80,7 +82,7 @@ param(
 Set-StrictMode -Version Latest
 
 # 版本号单一真源：发版时仅改此处；帮助文本与 -v/-Version 输出均引用本变量
-$ScriptVersion = 'v1.2.1'
+$ScriptVersion = 'v1.3.0'
 
 if ($PSVersionTable.PSEdition -eq 'Desktop') {
     Write-Warning '建议使用 PowerShell 7 (pwsh) 运行本工具；当前为 Windows PowerShell 5.1，中文可能乱码。'
@@ -1229,7 +1231,8 @@ cur.execute("""
            s.last_activity_at, s.updated_at, s.created_at,
            s.mode, s.source_mode, s.permission_mode, s.status, s.expert_id,
            s.is_background_automation, s.is_playground, s.deleted_at,
-           COALESCE(su.used, 0) AS used_fallback
+           COALESCE(su.used, 0) AS used_fallback,
+           su.credit_json AS credit_json
     FROM sessions s
     LEFT JOIN session_usage su ON su.session_id = s.id
 """)
@@ -1253,6 +1256,25 @@ for r in cur.fetchall():
         if total == 0:
             total = asnum(d.get('used_fallback'))
     d['token_source'] = 'used_fallback' if (jp is None and total > 0) else 'transcript'
+    # 积分（仅 WorkBuddy）：credit_json 形如 {"请求标识": 积分}，会话合计 = 全部值求和。
+    # 键有两种格式（32 位十六进制 traceId / req-<epoch_ms><seq> 旧格式），求和不做键格式假设；
+    # credit_json 为空 / JSON 非法 / 空字典 → None（无数据），渲染层显示 '-'。
+    _cj = d.get('credit_json')
+    _credits = None
+    if _cj:
+        try:
+            _cd = json.loads(_cj)
+            if isinstance(_cd, dict) and len(_cd) > 0:
+                _sum = 0.0
+                for _v in _cd.values():
+                    try:
+                        _sum += float(_v)
+                    except (TypeError, ValueError):
+                        pass
+                _credits = round(_sum, 2)
+        except Exception:
+            _credits = None
+    d['credits'] = _credits
     d['tokens'] = total
     d['input_tokens'] = inp
     d['output_tokens'] = outp
@@ -1305,6 +1327,7 @@ for sid, jp in session_file_map.items():
         'is_playground': 0,
         'deleted_at': None,
         'used_fallback': 0,
+        'credits': None,
         'token_source': 'transcript',
         'tokens': total,
         'input_tokens': inp,
@@ -1416,6 +1439,7 @@ function Get-WorkBuddySessions {
             CacheReadTokens = if ($s.cache_read_tokens) { [long]$s.cache_read_tokens } else { 0 }
             CacheWriteTokens= if ($s.cache_write_tokens) { [long]$s.cache_write_tokens } else { 0 }
             ReasoningTokens = if ($s.reasoning_tokens) { [long]$s.reasoning_tokens } else { 0 }
+            Credits         = if ($null -ne $s.credits) { [double]$s.credits } else { $null }
             TokenSource     = if ($s.token_source) { $s.token_source } else { 'transcript' }
             LastActivity    = $lastActivity
             Mode            = $s.mode
@@ -1730,6 +1754,7 @@ if ($hasSessionId -and ($Source -eq 'claude' -or $Source -eq 'workbuddy')) {
             Write-Output ('{0,-17} {1}' -f 'CacheReadTokens:', $session.CacheReadTokens.ToString('N0'))
             Write-Output ('{0,-17} {1}' -f 'CacheWriteTokens:', $session.CacheWriteTokens.ToString('N0'))
             Write-Output ('{0,-17} {1}' -f 'ReasoningTokens:', $session.ReasoningTokens.ToString('N0'))
+            Write-Output ('{0,-17} {1}' -f 'Credits:', $(if ($null -ne $session.Credits) { $session.Credits.ToString('N2') } else { '-' }))
             Write-Output ('{0,-17} {1}' -f 'Mode:', $session.Mode)
             Write-Output ('{0,-17} {1}' -f 'SourceMode:', $session.SourceMode)
             Write-Output ('{0,-17} {1}' -f 'PermissionMode:', $session.PermissionMode)
@@ -1918,6 +1943,7 @@ if ($AsJson) {
                 CacheReadTokens = $_.CacheReadTokens
                 CacheWriteTokens= $_.CacheWriteTokens
                 ReasoningTokens = $_.ReasoningTokens
+                Credits         = $_.Credits
                 LastActivity    = $_.LastActivity.ToString('yyyy-MM-dd HH:mm:ss')
                 Mode            = $_.Mode
                 SourceMode      = $_.SourceMode
@@ -1981,6 +2007,7 @@ if ($ShowCommands) {
             Write-Output ('{0,-17} {1}' -f 'CacheReadTokens:', $session.CacheReadTokens.ToString('N0'))
             Write-Output ('{0,-17} {1}' -f 'CacheWriteTokens:', $session.CacheWriteTokens.ToString('N0'))
             Write-Output ('{0,-17} {1}' -f 'ReasoningTokens:', $session.ReasoningTokens.ToString('N0'))
+            Write-Output ('{0,-17} {1}' -f 'Credits:', $(if ($null -ne $session.Credits) { $session.Credits.ToString('N2') } else { '-' }))
             Write-Output ('{0,-17} {1}' -f 'Mode:', $session.Mode)
             Write-Output ('{0,-17} {1}' -f 'SourceMode:', $session.SourceMode)
             Write-Output ('{0,-17} {1}' -f 'PermissionMode:', $session.PermissionMode)
@@ -2067,36 +2094,39 @@ if ($Source -eq 'codex') {
         Write-Output $line
     }
 } else {
-    $widths = @{ Type = 5; SessionId = 36; LastActivity = 19; Model = 20; Tokens = 14 }
-    $numColumns = 7
-    $fixedWidth = $widths.Type + $widths.SessionId + $widths.LastActivity + $widths.Model + $widths.Tokens + ($numColumns - 1)
+    $widths = @{ Type = 5; SessionId = 36; LastActivity = 19; Model = 20; Tokens = 14; Credits = 14 }
+    $numColumns = 8
+    $fixedWidth = $widths.Type + $widths.SessionId + $widths.LastActivity + $widths.Model + $widths.Tokens + $widths.Credits + ($numColumns - 1)
     $remainingWidth = [Math]::Max($consoleWidth - $fixedWidth, 56)
     $titleWidth = [Math]::Max([Math]::Min(32, [Math]::Floor($remainingWidth * 0.35)), 18)
     $workspaceWidth = [Math]::Max($remainingWidth - $titleWidth, 20)
     $widths.Title = $titleWidth
     $widths.WorkspacePath = $workspaceWidth
 
-    $header = '{0} {1} {2} {3} {4} {5} {6}' -f `
+    $header = '{0} {1} {2} {3} {4} {5} {6} {7}' -f `
         (Format-SessionCell -Text 'Type' -Width $widths.Type), `
         (Format-SessionCell -Text 'SessionId' -Width $widths.SessionId), `
         (Format-SessionCell -Text 'LastActivity' -Width $widths.LastActivity), `
         (Format-SessionCell -Text 'Title' -Width $widths.Title), `
         (Format-SessionCell -Text 'Model' -Width $widths.Model), `
         (Format-SessionCell -Text 'Tokens' -Width $widths.Tokens -Align right), `
+        (Format-SessionCell -Text 'Credits' -Width $widths.Credits -Align right), `
         (Format-SessionCell -Text 'WorkspacePath' -Width $widths.WorkspacePath)
-    $separator = '{0} {1} {2} {3} {4} {5} {6}' -f `
-        ('-' * $widths.Type), ('-' * $widths.SessionId), ('-' * $widths.LastActivity), ('-' * $widths.Title), ('-' * $widths.Model), ('-' * $widths.Tokens), ('-' * $widths.WorkspacePath)
+    $separator = '{0} {1} {2} {3} {4} {5} {6} {7}' -f `
+        ('-' * $widths.Type), ('-' * $widths.SessionId), ('-' * $widths.LastActivity), ('-' * $widths.Title), ('-' * $widths.Model), ('-' * $widths.Tokens), ('-' * $widths.Credits), ('-' * $widths.WorkspacePath)
     if ($hasAnyQuery) { Write-Output ('检索范围: {0}' -f $searchScope) }
     Write-Output $header
     Write-Output $separator
     foreach ($session in $sessions) {
-        $line = '{0} {1} {2} {3} {4} {5} {6}' -f `
+        $creditsText = if ($null -ne $session.Credits) { $session.Credits.ToString('N2') } else { '-' }
+        $line = '{0} {1} {2} {3} {4} {5} {6} {7}' -f `
             (Format-SessionCell -Text $session.Type -Width $widths.Type), `
             (Format-SessionCell -Text $session.SessionId -Width $widths.SessionId), `
             (Format-SessionCell -Text ($session.LastActivity.ToString('yyyy-MM-dd HH:mm:ss')) -Width $widths.LastActivity), `
             (Format-SessionCell -Text $session.Title -Width $widths.Title), `
             (Format-SessionCell -Text $session.Model -Width $widths.Model), `
             (Format-SessionCell -Text ($session.Tokens.ToString('N0')) -Width $widths.Tokens -Align right), `
+            (Format-SessionCell -Text $creditsText -Width $widths.Credits -Align right), `
             (Format-SessionCell -Text $session.WorkspacePath -Width $widths.WorkspacePath -Mode 'middle')
         Write-Output $line
     }

@@ -193,9 +193,10 @@ asq -Source workbuddy -g -c
 | `Title` | 会话标题 | `custom_title` 优先，回退 `title`；软删除会话附 `[已软删除]`；子智能体前缀「子智能体: <id>」 |
 | `Model` | 会话模型 | `sessions.model`（有 DB 行者）；合成会话无 |
 | `Tokens` | 会话累计 token 总量（千分位，右对齐） | **v1.0.4 起解析 `projects/*.jsonl` transcript** 计算（行筛 + status 跳过 + usage 取法优先级 + `input_exclusive` 缓存减法 + reasoning 桶 + 去重保留较大 total）；**v1.0.5 起采集范围扩展为全部 `projects/**/*.jsonl` transcript**（含软删除会话与 `agent-*` 子智能体） |
+| `Credits` | 积分消耗（会话合计，两位小数千分位，右对齐；仅 workbuddy 有此列） | `session_usage.credit_json` 全部请求值求和；无积分数据（`credit_json` 为空 / NULL）显示 `-`；合成子智能体会话恒为 `-` |
 | `WorkspacePath` | 真实工作区路径 | `sessions.cwd`（有 DB 行者）；列宽紧张时中间截断 `...` |
 
-`-c` / `-s` / `-AsJson` 额外 token 字段：`InputTokens`、`OutputTokens`、`CacheReadTokens`、`CacheWriteTokens`、`ReasoningTokens`（v1.0.4 起补齐，与 codex/claude 口径一致；`CACHE_READ_KEYS`/`CACHE_WRITE_KEYS` 覆盖 `cache_read_input_tokens`/`cache_creation_input_tokens`/`prompt_cache_hit_tokens` 等键；`Input` 已扣除缓存命中，五分量之和恒等于 `Tokens`）。其余既有字段：`Type`、`Title`、`Model`、`LastActivity`、`WorkspacePath`。
+`-c` / `-s` / `-AsJson` 额外 token 字段：`InputTokens`、`OutputTokens`、`CacheReadTokens`、`CacheWriteTokens`、`ReasoningTokens`（v1.0.4 起补齐，与 codex/claude 口径一致；`CACHE_READ_KEYS`/`CACHE_WRITE_KEYS` 覆盖 `cache_read_input_tokens`/`cache_creation_input_tokens`/`prompt_cache_hit_tokens` 等键；`Input` 已扣除缓存命中，五分量之和恒等于 `Tokens`）；`-AsJson` 另含 `Credits` 字段（积分消耗，会话合计，无数据为 `null`）。其余既有字段：`Type`、`Title`、`Model`、`LastActivity`、`WorkspacePath`。
 
 ---
 
@@ -228,6 +229,7 @@ flowchart TD
 | Model | `turn_context.payload.model`（过滤 synthetic/image） | 末行 `message.model` | `sessions.model` |
 | LastActivity | `session_index` 更新时间 / 文件时间 | 末行 `timestamp`（UTC→本地） | `last_activity_at`→`updated_at`→`created_at` |
 | Tokens | stateful-delta 解析（增量主源 + 去重） | 去重 + 分量之和（含 `agent-*`） | 全部 `projects/*.jsonl` transcript 解析 |
+| Credits | 无此字段 | 无此字段 | `session_usage.credit_json` 求和（无数据显示 `-`/`null`） |
 
 ---
 

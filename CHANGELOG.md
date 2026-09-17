@@ -2,6 +2,12 @@
 
 格式遵循 [Keep a Changelog 2.0.0](https://keepachangelog.com/en/2.0.0/)，版本号遵循 [Semantic Versioning 2.0.0](https://semver.org/spec/v2.0.0.html)。
 
+## [1.3.0] - 2026-09-17
+
+### Added（新增）
+
+- 新增 WorkBuddy 积分消耗（`Credits`）查询与统计展示：会话列表、`-c` / `-s` 详情与 `-AsJson` 输出均展示会话积分消耗合计，无积分数据以 `-`（JSON 为 `null`）表示。
+
 ## [1.2.1] - 2026-09-10
 
 ### Fixed（修复）
@@ -55,8 +61,9 @@
 - 统一命令 `asq`：以 `-Source codex|claude|workbuddy` 或来源位置参数（如 `asq codex -g`）查询；`-v` / `-Version` 显示版本号。
 - `session-profile-aliases.ps1`：将三条命令注册为 PowerShell Profile 同名函数，新开终端即可直接使用。
 
-[v1.2.1]: https://github.com/iuuunlyk/AgentSessionQuery/releases/tag/v1.2.1
-[v1.2.0]: https://github.com/iuuunlyk/AgentSessionQuery/releases/tag/v1.2.0
-[v1.1.2]: https://github.com/iuuunlyk/AgentSessionQuery/releases/tag/v1.1.2
-[v1.1.0]: https://github.com/iuuunlyk/AgentSessionQuery/releases/tag/v1.1.0
-[v1.0.0]: https://github.com/iuuunlyk/AgentSessionQuery/releases/tag/v1.0.0
+[1.3.0]: https://github.com/iuuunlyk/AgentSessionQuery/releases/tag/v1.3.0
+[1.2.1]: https://github.com/iuuunlyk/AgentSessionQuery/releases/tag/v1.2.1
+[1.2.0]: https://github.com/iuuunlyk/AgentSessionQuery/releases/tag/v1.2.0
+[1.1.2]: https://github.com/iuuunlyk/AgentSessionQuery/releases/tag/v1.1.2
+[1.1.0]: https://github.com/iuuunlyk/AgentSessionQuery/releases/tag/v1.1.0
+[1.0.0]: https://github.com/iuuunlyk/AgentSessionQuery/releases/tag/v1.0.0
