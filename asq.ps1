@@ -61,6 +61,15 @@ param(
     [ValidateSet('任务', '空间')]
     [string]$Type,
 
+    # WorkBuddy 列表可选列开关：Status 默认显示（-HideStatus 隐藏），Tokens / Credits 默认隐藏（-Tokens / -Credits 显示）。
+    # 仅作用于 workbuddy 列表渲染；-s / -c 详情视图与 -AsJson 输出恒为全字段，不受这三个开关影响。
+    # 对 codex / claude 源无效（这两个源没有 Status 与 Credits 字段），静默忽略、不报错。
+    [switch]$HideStatus,
+
+    [switch]$Tokens,
+
+    [switch]$Credits,
+
     # 按最后活动时间筛选：接受整数天数（7 / 7d）与关键字（today / yesterday / week / month）。
     # 用 [object] 而非 [string]：与 -Limit 同思路，让 -d 7 绑定为 int、-d 7d 绑定为 string，统一 ToString() 后校验。
     # 不用 ValidateSet：会让 7d / 30 这类输入直接崩掉。
@@ -82,7 +91,7 @@ param(
 Set-StrictMode -Version Latest
 
 # 版本号单一真源：发版时仅改此处；帮助文本与 -v/-Version 输出均引用本变量
-$ScriptVersion = 'v1.3.0'
+$ScriptVersion = 'v1.4.0'
 
 if ($PSVersionTable.PSEdition -eq 'Desktop') {
     Write-Warning '建议使用 PowerShell 7 (pwsh) 运行本工具；当前为 Windows PowerShell 5.1，中文可能乱码。'
@@ -1509,6 +1518,10 @@ asq - 本机 Codex / Claude / WorkBuddy 历史会话统一查询命令
   -RootPath <路径>                   Codex / Claude 数据根目录（仅 codex / claude；默认 ~/.codex 或 ~/.claude）
   -DbPath <路径>                     WorkBuddy 数据库文件路径（仅 workbuddy；默认 ~/.workbuddy/workbuddy.db）
   -Type <任务|空间>                   按派生类型筛选（仅 workbuddy：任务 / 空间）
+  -HideStatus                        隐藏 WorkBuddy 列表的 Status 列（该列默认显示）
+  -Tokens                            显示 WorkBuddy 列表的 Tokens 列（该列默认隐藏）
+  -Credits                           显示 WorkBuddy 列表的 Credits 列（该列默认隐藏）
+                                     （三个开关仅影响 workbuddy 列表；-s / -c 详情与 -AsJson 恒为全字段）
 "@
 }
 
@@ -2094,40 +2107,69 @@ if ($Source -eq 'codex') {
         Write-Output $line
     }
 } else {
-    $widths = @{ Type = 5; SessionId = 36; LastActivity = 19; Model = 20; Tokens = 14; Credits = 14 }
-    $numColumns = 8
-    $fixedWidth = $widths.Type + $widths.SessionId + $widths.LastActivity + $widths.Model + $widths.Tokens + $widths.Credits + ($numColumns - 1)
+    # WorkBuddy 列表可选列：Status 默认显示（-HideStatus 关闭），Tokens / Credits 默认隐藏（-Tokens / -Credits 打开）。
+    # 列顺序固定：Type / SessionId / LastActivity / Title / Model / [Status] / [Tokens] / [Credits] / WorkspacePath。
+    $showStatus  = -not $HideStatus.IsPresent
+    $showTokens  = $Tokens.IsPresent
+    $showCredits = $Credits.IsPresent
+
+    $widths = @{ Type = 5; SessionId = 36; LastActivity = 19; Model = 20; Status = 10; Tokens = 14; Credits = 14 }
+    $optionalWidth = 0
+    $optionalCount = 0
+    if ($showStatus)  { $optionalWidth += $widths.Status;  $optionalCount++ }
+    if ($showTokens)  { $optionalWidth += $widths.Tokens;  $optionalCount++ }
+    if ($showCredits) { $optionalWidth += $widths.Credits; $optionalCount++ }
+    $numColumns = 6 + $optionalCount
+    $fixedWidth = $widths.Type + $widths.SessionId + $widths.LastActivity + $widths.Model + $optionalWidth + ($numColumns - 1)
     $remainingWidth = [Math]::Max($consoleWidth - $fixedWidth, 56)
     $titleWidth = [Math]::Max([Math]::Min(32, [Math]::Floor($remainingWidth * 0.35)), 18)
     $workspaceWidth = [Math]::Max($remainingWidth - $titleWidth, 20)
     $widths.Title = $titleWidth
     $widths.WorkspacePath = $workspaceWidth
 
-    $header = '{0} {1} {2} {3} {4} {5} {6} {7}' -f `
-        (Format-SessionCell -Text 'Type' -Width $widths.Type), `
-        (Format-SessionCell -Text 'SessionId' -Width $widths.SessionId), `
-        (Format-SessionCell -Text 'LastActivity' -Width $widths.LastActivity), `
-        (Format-SessionCell -Text 'Title' -Width $widths.Title), `
-        (Format-SessionCell -Text 'Model' -Width $widths.Model), `
-        (Format-SessionCell -Text 'Tokens' -Width $widths.Tokens -Align right), `
-        (Format-SessionCell -Text 'Credits' -Width $widths.Credits -Align right), `
-        (Format-SessionCell -Text 'WorkspacePath' -Width $widths.WorkspacePath)
-    $separator = '{0} {1} {2} {3} {4} {5} {6} {7}' -f `
-        ('-' * $widths.Type), ('-' * $widths.SessionId), ('-' * $widths.LastActivity), ('-' * $widths.Title), ('-' * $widths.Model), ('-' * $widths.Tokens), ('-' * $widths.Credits), ('-' * $widths.WorkspacePath)
+    # 表头与分隔线按可选列动态拼装；数据行沿用同一套列集合，保证三者列数恒等。
+    $headerCells = @(
+        (Format-SessionCell -Text 'Type' -Width $widths.Type),
+        (Format-SessionCell -Text 'SessionId' -Width $widths.SessionId),
+        (Format-SessionCell -Text 'LastActivity' -Width $widths.LastActivity),
+        (Format-SessionCell -Text 'Title' -Width $widths.Title),
+        (Format-SessionCell -Text 'Model' -Width $widths.Model)
+    )
+    $ruleCells = @(('-' * $widths.Type), ('-' * $widths.SessionId), ('-' * $widths.LastActivity), ('-' * $widths.Title), ('-' * $widths.Model))
+    if ($showStatus) {
+        $headerCells += (Format-SessionCell -Text 'Status' -Width $widths.Status)
+        $ruleCells += ('-' * $widths.Status)
+    }
+    if ($showTokens) {
+        $headerCells += (Format-SessionCell -Text 'Tokens' -Width $widths.Tokens -Align right)
+        $ruleCells += ('-' * $widths.Tokens)
+    }
+    if ($showCredits) {
+        $headerCells += (Format-SessionCell -Text 'Credits' -Width $widths.Credits -Align right)
+        $ruleCells += ('-' * $widths.Credits)
+    }
+    $headerCells += (Format-SessionCell -Text 'WorkspacePath' -Width $widths.WorkspacePath)
+    $ruleCells += ('-' * $widths.WorkspacePath)
+    $header = $headerCells -join ' '
+    $separator = $ruleCells -join ' '
     if ($hasAnyQuery) { Write-Output ('检索范围: {0}' -f $searchScope) }
     Write-Output $header
     Write-Output $separator
     foreach ($session in $sessions) {
+        # 无状态值（合成 agent-* 会话）显示 -，与 Credits 无数据的口径一致。
+        $statusText = if ([string]::IsNullOrWhiteSpace($session.Status)) { '-' } else { $session.Status }
         $creditsText = if ($null -ne $session.Credits) { $session.Credits.ToString('N2') } else { '-' }
-        $line = '{0} {1} {2} {3} {4} {5} {6} {7}' -f `
-            (Format-SessionCell -Text $session.Type -Width $widths.Type), `
-            (Format-SessionCell -Text $session.SessionId -Width $widths.SessionId), `
-            (Format-SessionCell -Text ($session.LastActivity.ToString('yyyy-MM-dd HH:mm:ss')) -Width $widths.LastActivity), `
-            (Format-SessionCell -Text $session.Title -Width $widths.Title), `
-            (Format-SessionCell -Text $session.Model -Width $widths.Model), `
-            (Format-SessionCell -Text ($session.Tokens.ToString('N0')) -Width $widths.Tokens -Align right), `
-            (Format-SessionCell -Text $creditsText -Width $widths.Credits -Align right), `
-            (Format-SessionCell -Text $session.WorkspacePath -Width $widths.WorkspacePath -Mode 'middle')
-        Write-Output $line
+        $cells = @(
+            (Format-SessionCell -Text $session.Type -Width $widths.Type),
+            (Format-SessionCell -Text $session.SessionId -Width $widths.SessionId),
+            (Format-SessionCell -Text ($session.LastActivity.ToString('yyyy-MM-dd HH:mm:ss')) -Width $widths.LastActivity),
+            (Format-SessionCell -Text $session.Title -Width $widths.Title),
+            (Format-SessionCell -Text $session.Model -Width $widths.Model)
+        )
+        if ($showStatus)  { $cells += (Format-SessionCell -Text $statusText -Width $widths.Status) }
+        if ($showTokens)  { $cells += (Format-SessionCell -Text ($session.Tokens.ToString('N0')) -Width $widths.Tokens -Align right) }
+        if ($showCredits) { $cells += (Format-SessionCell -Text $creditsText -Width $widths.Credits -Align right) }
+        $cells += (Format-SessionCell -Text $session.WorkspacePath -Width $widths.WorkspacePath -Mode 'middle')
+        Write-Output ($cells -join ' ')
     }
 }

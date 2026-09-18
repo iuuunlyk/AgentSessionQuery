@@ -131,7 +131,7 @@ asq -Source workbuddy -g -c
 
 ## 通用参数
 
-三个数据源的参数几乎一致（Claude / WorkBuddy 各多一个 `-s/-SessionId`；WorkBuddy 额外有 `-Type` 按任务 / 空间筛选）。
+三个数据源的参数几乎一致（Claude / WorkBuddy 各多一个 `-s/-SessionId`；WorkBuddy 额外有 `-Type` 按任务 / 空间筛选，以及三个列表可选列开关 `-HideStatus` / `-Tokens` / `-Credits`）。
 
 | 参数 | 别名 | 说明 |
 | --- | --- | --- |
@@ -149,6 +149,11 @@ asq -Source workbuddy -g -c
 | `-Help` | `-h` / `-?` / `--help` | 显示帮助 |
 | `-Type <任务\|空间>` | — | （仅 WorkBuddy）按任务 / 空间筛选会话 |
 | `-DbPath <路径>` | — | （仅 WorkBuddy）指定 SQLite 数据库路径（默认 `~/.workbuddy/workbuddy.db`） |
+| `-HideStatus` | — | （仅 WorkBuddy 列表）隐藏 `Status` 列（该列默认显示） |
+| `-Tokens` | — | （仅 WorkBuddy 列表）显示 `Tokens` 列（该列默认隐藏） |
+| `-Credits` | — | （仅 WorkBuddy 列表）显示 `Credits` 列（该列默认隐藏） |
+
+> **WorkBuddy 列表可选列**：`Status` 默认显示，用 `-HideStatus` 关闭；`Tokens` 与 `Credits` 默认隐藏，用 `-Tokens` / `-Credits` 打开。三个开关**只影响列表渲染**——`-s` / `-c` 详情视图与 `-AsJson` 输出恒为全字段，不受影响；对 codex / claude 源无效（两源无 `Status` / `Credits` 字段，静默忽略、不报错）。
 
 > **`-d` / `-WithinDays` 口径**：`today` / `yesterday` 按**自然日 00:00** 切分；`week` 为**自然周**（本周一 00:00 起，周一为一周之首）；`month` 为**自然月**（本月 1 号 00:00 起）；数字 `7` / `7d` / `N` 为**滚动近 N 天**。所有形态都取「不早于某时刻」的下界，因此时间未知的会话不会命中。`-d` 作用于列表视图，对 `-s` 单会话详情视图不适用。
 
@@ -192,8 +197,9 @@ asq -Source workbuddy -g -c
 | `LastActivity` | 最近活动时间（epoch 毫秒转本地） | `last_activity_at` → `updated_at` → `created_at`（有 DB 行者） |
 | `Title` | 会话标题 | `custom_title` 优先，回退 `title`；软删除会话附 `[已软删除]`；子智能体前缀「子智能体: <id>」 |
 | `Model` | 会话模型 | `sessions.model`（有 DB 行者）；合成会话无 |
-| `Tokens` | 会话累计 token 总量（千分位，右对齐） | **v1.0.4 起解析 `projects/*.jsonl` transcript** 计算（行筛 + status 跳过 + usage 取法优先级 + `input_exclusive` 缓存减法 + reasoning 桶 + 去重保留较大 total）；**v1.0.5 起采集范围扩展为全部 `projects/**/*.jsonl` transcript**（含软删除会话与 `agent-*` 子智能体） |
-| `Credits` | 积分消耗（会话合计，两位小数千分位，右对齐；仅 workbuddy 有此列） | `session_usage.credit_json` 全部请求值求和；无积分数据（`credit_json` 为空 / NULL）显示 `-`；合成子智能体会话恒为 `-` |
+| `Status` | 会话状态（原样显示，如 `completed` / `working` / `archived` / `error`；**默认显示**，`-HideStatus` 可关闭） | `sessions.status`；无状态值（合成 `agent-*` 子智能体会话）显示 `-` |
+| `Tokens` | 会话累计 token 总量（千分位，右对齐；**可选列，默认隐藏**，`-Tokens` 打开） | **v1.0.4 起解析 `projects/*.jsonl` transcript** 计算（行筛 + status 跳过 + usage 取法优先级 + `input_exclusive` 缓存减法 + reasoning 桶 + 去重保留较大 total）；**v1.0.5 起采集范围扩展为全部 `projects/**/*.jsonl` transcript**（含软删除会话与 `agent-*` 子智能体） |
+| `Credits` | 积分消耗（会话合计，两位小数千分位，右对齐；仅 workbuddy 有此列；**可选列，默认隐藏**，`-Credits` 打开） | `session_usage.credit_json` 全部请求值求和；无积分数据（`credit_json` 为空 / NULL）显示 `-`；合成子智能体会话恒为 `-` |
 | `WorkspacePath` | 真实工作区路径 | `sessions.cwd`（有 DB 行者）；列宽紧张时中间截断 `...` |
 
 `-c` / `-s` / `-AsJson` 额外 token 字段：`InputTokens`、`OutputTokens`、`CacheReadTokens`、`CacheWriteTokens`、`ReasoningTokens`（v1.0.4 起补齐，与 codex/claude 口径一致；`CACHE_READ_KEYS`/`CACHE_WRITE_KEYS` 覆盖 `cache_read_input_tokens`/`cache_creation_input_tokens`/`prompt_cache_hit_tokens` 等键；`Input` 已扣除缓存命中，五分量之和恒等于 `Tokens`）；`-AsJson` 另含 `Credits` 字段（积分消耗，会话合计，无数据为 `null`）。其余既有字段：`Type`、`Title`、`Model`、`LastActivity`、`WorkspacePath`。
@@ -228,8 +234,9 @@ flowchart TD
 | Lane / Type | `base_instructions` 痕迹判 `Codex/OMX` | 用 `mode` 区分 | `is_playground`/`is_background_automation` 派生 |
 | Model | `turn_context.payload.model`（过滤 synthetic/image） | 末行 `message.model` | `sessions.model` |
 | LastActivity | `session_index` 更新时间 / 文件时间 | 末行 `timestamp`（UTC→本地） | `last_activity_at`→`updated_at`→`created_at` |
-| Tokens | stateful-delta 解析（增量主源 + 去重） | 去重 + 分量之和（含 `agent-*`） | 全部 `projects/*.jsonl` transcript 解析 |
-| Credits | 无此字段 | 无此字段 | `session_usage.credit_json` 求和（无数据显示 `-`/`null`） |
+| Status | 无此字段 | 无此字段 | `sessions.status`（列表**默认显示**，`-HideStatus` 关闭） |
+| Tokens | stateful-delta 解析（增量主源 + 去重） | 去重 + 分量之和（含 `agent-*`） | 全部 `projects/*.jsonl` transcript 解析（列表**默认隐藏**，`-Tokens` 打开） |
+| Credits | 无此字段 | 无此字段 | `session_usage.credit_json` 求和（无数据显示 `-`/`null`；列表**默认隐藏**，`-Credits` 打开） |
 
 ---
 
@@ -279,10 +286,11 @@ flowchart TD
 
 - **运行目标为 Windows**：asq 仅面向 Windows 设计，macOS / Linux 不在支持范围，未经设计与验证，不保证可用。
 - **Windows 专属依赖（代码证据）**：
-  - `asq.ps1` 第 86 行：在 Windows PowerShell 5.1 下运行时输出专属告警（`建议使用 PowerShell 7 (pwsh) 运行本工具；当前为 Windows PowerShell 5.1，中文可能乱码。`）。
-  - `asq.ps1` 第 1331 行：`if ($py -and $py -match 'WindowsApps')` —— 探测 Windows 应用商店（WindowsApps）Python 安装路径。
-  - `asq.ps1` 第 1341 行：`$cand = Join-Path $_.FullName 'python.exe'` —— Python 可执行文件名写死 `.exe` 扩展名（Windows 专属）。
+  - `asq.ps1` 中 `Write-Warning '建议使用 PowerShell 7 (pwsh) 运行本工具；当前为 Windows PowerShell 5.1，中文可能乱码。'`：在 Windows PowerShell 5.1 下运行时输出专属告警。
+  - `asq.ps1` 中 `if ($py -and $py -match 'WindowsApps')` —— 探测 Windows 应用商店（WindowsApps）Python 安装路径。
+  - `asq.ps1` 中 `$cand = Join-Path $_.FullName 'python.exe'` —— Python 可执行文件名写死 `.exe` 扩展名（Windows 专属）。
   - WorkBuddy 数据源依赖本机 Python 运行时：上述 `.exe` 探测与 `WindowsApps` 路径均指向 Windows 环境，macOS / Linux 无对应路径。
+  - 注：本节只引用代码片段、不标注行号——行号会随源码增删而漂移；片段的存在性由 `tests/` 回归用例断言（见「测试说明」）。
 - **社群拉取请求（pull request，PR）#1 的边界**：该 PR 的 `-IncludeSubdirectories` 路径分隔符归一化仅修复 Windows 下目录分隔符（`\` 与 `/`）的匹配逻辑，**未触及 Python 运行时发现路径**，故属于防御性加固，**不表示已支持 macOS / Linux**。
 - **真正跨平台支持属范围外**：若需支持 macOS / Linux，须独立评估（Python 运行时发现、路径处理、PowerShell 7 跨平台行为等），不在当前版本设计与验证范围内。
 
@@ -290,7 +298,7 @@ flowchart TD
 
 ## 测试说明
 
-本仓库的自动化测试（`tests/`）依赖本机真实的 `~/.claude`、`~/.codex` 与 `~/.workbuddy` 数据，**暂不随开源发布**：回归用例需在包含真实会话数据的本机环境运行，部分用例对真实数据排序敏感。开源交付物为：2 个脚本（`asq.ps1` / `session-profile-aliases.ps1`）+ 文档（`README.md` / `CHANGELOG.md` / `LICENSE` / `docs/` 下各 `vX.Y.Z-release-notes.md` 发布说明）。历史版本（v0.x）发布说明与内部开发文档不随开源发布。
+本仓库的自动化测试（`tests/`）依赖本机真实的 `~/.claude`、`~/.codex` 与 `~/.workbuddy` 数据，**暂不随开源发布**：回归用例需在包含真实会话数据的本机环境运行，部分用例对真实数据排序敏感。除行为回归外，套件还包含**文档一致性门禁**：校验 README 引用的 `asq.ps1` 代码片段在源码中确实存在（防止文档与代码脱节），以及命令行选项在帮助文本中可查。开源交付物为：2 个脚本（`asq.ps1` / `session-profile-aliases.ps1`）+ 文档（`README.md` / `CHANGELOG.md` / `LICENSE` / `docs/` 下各 `vX.Y.Z-release-notes.md` 发布说明）。历史版本（v0.x）发布说明与内部开发文档不随开源发布。
 
 ---
 

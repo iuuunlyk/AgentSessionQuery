@@ -2,6 +2,18 @@
 
 格式遵循 [Keep a Changelog 2.0.0](https://keepachangelog.com/en/2.0.0/)，版本号遵循 [Semantic Versioning 2.0.0](https://semver.org/spec/v2.0.0.html)。
 
+## [1.4.0] - 2026-09-18
+
+### Added（新增）
+
+- WorkBuddy 列表新增 `Status` 列，展示会话状态（`completed` / `working` / `archived` / `error` 等，原样输出）；该列默认显示。
+- 新增三个列表可选列开关：`-HideStatus` 关闭 `Status` 列，`-Tokens` / `-Credits` 分别打开对应的可选列。
+
+### Changed（变更）
+
+- WorkBuddy 列表默认隐藏 `Tokens` 与 `Credits` 两列。需要这两列时用 `-Tokens` / `-Credits` 打开。
+- 三个可选列开关仅作用于 workbuddy 列表渲染；`-s` / `-c` 详情视图与 `-AsJson` 输出恒为全字段，不受影响；对 codex / claude 源无效（静默忽略）。
+
 ## [1.3.0] - 2026-09-17
 
 ### Added（新增）
