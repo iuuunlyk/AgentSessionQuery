@@ -9,6 +9,9 @@ AgentsSessionQuery 统一命令（规划 1 单命令重构）
     统一过滤/排序/Limit、统一 Format-SessionCell 截断对齐；按 Source 分发表 / -AsJson / -c 详情 / -s 详情。
   - WorkBuddy 来源专属：Credits 列（积分消耗，取 session_usage.credit_json 全部请求值求和；
     仅 workbuddy 有此数据源，无积分数据显示 '-'；列表 / 详情 / -AsJson 三视图一致）。
+  - WorkBuddy 标题三级回退：custom_title（DB，人工重命名）→ transcript 内 type=ai-title 的
+    aiTitle（取末条，跟进 AI 后续更新）→ sessions.title（防回归兜底）→ 首条真实用户消息
+    （必须先剥离 <system-reminder> 等成块内部标签，再截 42 字）→ '(无标题会话)'。
   - 原三脚本（codex-sessions.ps1 / claude-sessions.ps1 / workbuddy-sessions.ps1，转发 wrapper）已退役删除，
     套件收敛为单一命令 asq（session-profile-aliases.ps1 仅注册 asq 函数）。
 
@@ -91,7 +94,7 @@ param(
 Set-StrictMode -Version Latest
 
 # 版本号单一真源：发版时仅改此处；帮助文本与 -v/-Version 输出均引用本变量
-$ScriptVersion = 'v1.4.0'
+$ScriptVersion = 'v1.4.1'
 
 if ($PSVersionTable.PSEdition -eq 'Desktop') {
     Write-Warning '建议使用 PowerShell 7 (pwsh) 运行本工具；当前为 Windows PowerShell 5.1，中文可能乱码。'
@@ -1075,7 +1078,7 @@ function Get-ClaudeSessions {
 # WorkBuddy 采集（移植自 workbuddy-sessions.ps1 v1.0.6，含内嵌 Python 只读桥接）
 # ============================================================================
 $pyCode = @'
-import sqlite3, json, sys, os
+import sqlite3, json, sys, os, re
 from pathlib import Path
 
 db = sys.argv[1]
@@ -1093,6 +1096,96 @@ if os.path.isdir(projects):
                 sid = fn[:-6]
                 if sid not in session_file_map:
                     session_file_map[sid] = os.path.join(root, fn)
+
+# ── 标题三级回退（+ 防回归兜底）───────────────────────────────────────────
+# 一级 custom_title（人工重命名，DB）→ 二级 aiTitle（jsonl 末条，AI 后续更新会覆盖）
+# → 三级 DB title（防回归：部分会话 jsonl 为空或不含 ai-title 行，但 DB 存有好标题）
+# → 四级 首条真实用户消息（剥离 system-reminder 等内部标签后截 42 字）→ 兜底 "(无标题会话)"
+# 注：WorkBuddy 的 role=user 记录内容以 <system-reminder> 系统前缀开头，
+#     必须先剥离成块标签再判空，否则 90% 以上会话会误落兜底。
+_TAG_BLOCK_RE = re.compile(
+    r"<(system-reminder|user_info|additional_data|memory_and_skills_reminder"
+    r"|current_time|user-context|connector-status|identity_context"
+    r"|project_context|project_guidance|user_custom_instructions)[^>]*>.*?</\1>",
+    re.S | re.I)
+_TAG_ANY_RE = re.compile(r"<[^>]{0,80}>")
+
+def _wb_extract_text(content):
+    """兼容 content 为 str / [{'type':..,'text':..}] / dict 三种形态"""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for c in content:
+            if isinstance(c, dict):
+                t = c.get('text') or c.get('content') or ''
+                if isinstance(t, str):
+                    parts.append(t)
+            elif isinstance(c, str):
+                parts.append(c)
+        return ' '.join(parts)
+    if isinstance(content, dict):
+        t = content.get('text') or content.get('content')
+        return t if isinstance(t, str) else ''
+    return ''
+
+def _wb_strip_internal(t):
+    """剥离 system-reminder 等成块内部标签，再清除残余尖括号标记，压缩空白"""
+    prev = None
+    while prev != t:
+        prev = t
+        t = _TAG_BLOCK_RE.sub(' ', t)
+    t = _TAG_ANY_RE.sub(' ', t)
+    return ' '.join(t.split())
+
+def _wb_scan_titles(jp):
+    """扫描单个 jsonl，返回 (ai_title 末条, 首条真实用户消息 42 字)；异常一律降级 (None, None)"""
+    ai_title = None
+    first_user = None
+    if not jp:
+        return None, None
+    try:
+        with open(jp, 'r', encoding='utf-8', errors='replace') as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    o = json.loads(line)
+                except Exception:
+                    continue
+                if not isinstance(o, dict):
+                    continue
+                if o.get('type') == 'ai-title':
+                    v = o.get('aiTitle')
+                    if isinstance(v, str) and v.strip():
+                        ai_title = v.strip()      # 后出现的覆盖：AI 会后续更新标题
+                    continue
+                if first_user is None and o.get('role') == 'user':
+                    t = _wb_strip_internal(_wb_extract_text(o.get('content')))
+                    if t and not t.startswith('<'):
+                        first_user = t[:42]
+    except Exception:
+        pass
+    return ai_title, first_user
+
+def resolve_title(custom_title, db_title, jp):
+    """按优先级定标题；库/文件异常绝不中断采集"""
+    try:
+        if custom_title and str(custom_title).strip():
+            return str(custom_title).strip()
+        ai_title, first_user = _wb_scan_titles(jp)
+        if ai_title:
+            return ai_title
+        if db_title and str(db_title).strip():
+            return str(db_title).strip()
+        if first_user:
+            return first_user
+    except Exception:
+        pass
+    if db_title and str(db_title).strip():
+        return str(db_title).strip()
+    return '(无标题会话)'
 
 def asnum(x):
     try: return int(float(x))
@@ -1256,11 +1349,14 @@ for r in cur.fetchall():
     jp = session_file_map.get(sid)
     if jp:
         total, inp, outp, cr, cw, rs = compute_tokens(jp)
+    # 标题按三级回退定级（custom_title → aiTitle → DB title → 首条用户消息 → 兜底）
+    d['resolved_title'] = resolve_title(d.get('custom_title'), d.get('title'), jp)
     if is_deleted:
         if total == 0:
             continue
-        base_title = d.get('custom_title') or d.get('title') or sid
+        base_title = d['resolved_title'] or sid
         d['custom_title'] = base_title + ' [已软删除]'
+        d['resolved_title'] = base_title + ' [已软删除]'
     else:
         if total == 0:
             total = asnum(d.get('used_fallback'))
@@ -1318,10 +1414,16 @@ for sid, jp in session_file_map.items():
     except Exception:
         pass
     _mtime = int(os.path.getmtime(jp) * 1000)
+    # 合成会话（无 DB 行）：无 custom_title / DB title，走 aiTitle → 首条用户消息 → 兜底
+    _syn_label = ('子智能体: ' + sid) if is_agent else sid
+    _syn_resolved = resolve_title(None, None, jp)
+    if _syn_resolved == '(无标题会话)':
+        _syn_resolved = _syn_label
     d = {
         'id': sid,
         'title': None,
-        'custom_title': ('子智能体: ' + sid) if is_agent else sid,
+        'custom_title': _syn_label,
+        'resolved_title': _syn_resolved,
         'cwd': os.path.dirname(jp),
         'model': model,
         'last_activity_at': _mtime,
@@ -1417,7 +1519,11 @@ function Get-WorkBuddySessions {
     $sessionRows = $raw | ConvertFrom-Json
 
     $records = foreach ($s in $sessionRows) {
-        $title = if ($s.custom_title) { $s.custom_title } else { $s.title }
+        # 标题由 Python 侧按三级回退定级（custom_title → aiTitle → DB title → 首条用户消息 → 兜底）
+        $title = if ($s.resolved_title) { $s.resolved_title }
+                 elseif ($s.custom_title) { $s.custom_title }
+                 elseif ($s.title) { $s.title }
+                 else { $s.id }
         $la = if ($s.last_activity_at) { $s.last_activity_at }
                elseif ($s.updated_at) { $s.updated_at }
                elseif ($s.created_at) { $s.created_at }

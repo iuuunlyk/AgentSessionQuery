@@ -195,7 +195,7 @@ asq -Source workbuddy -g -c
 | `Type` | 派生列：`任务`（沙盒/后台自动化）/ `空间`（真实项目） | `is_playground` / `is_background_automation` 标志派生；`agent-*` 子智能体合成会话归「任务」 |
 | `SessionId` | 会话真实 ID（或子智能体 transcript 标识） | `sessions.id`（DB 行）或 transcript 文件名（合成会话） |
 | `LastActivity` | 最近活动时间（epoch 毫秒转本地） | `last_activity_at` → `updated_at` → `created_at`（有 DB 行者） |
-| `Title` | 会话标题 | `custom_title` 优先，回退 `title`；软删除会话附 `[已软删除]`；子智能体前缀「子智能体: <id>」 |
+| `Title` | 会话标题 | 按优先级回退：`custom_title`（人工重命名）→ transcript 内 `ai-title` 的 `aiTitle`（取**末条**，跟进 AI 后续更新）→ `sessions.title` → 首条真实用户消息（剥离 `<system-reminder>` 等内部标签后截 42 字）→ `(无标题会话)`；软删除会话附 `[已软删除]`；子智能体前缀「子智能体: <id>」 |
 | `Model` | 会话模型 | `sessions.model`（有 DB 行者）；合成会话无 |
 | `Status` | 会话状态（原样显示，如 `completed` / `working` / `archived` / `error`；**默认显示**，`-HideStatus` 可关闭） | `sessions.status`；无状态值（合成 `agent-*` 子智能体会话）显示 `-` |
 | `Tokens` | 会话累计 token 总量（千分位，右对齐；**可选列，默认隐藏**，`-Tokens` 打开） | **v1.0.4 起解析 `projects/*.jsonl` transcript** 计算（行筛 + status 跳过 + usage 取法优先级 + `input_exclusive` 缓存减法 + reasoning 桶 + 去重保留较大 total）；**v1.0.5 起采集范围扩展为全部 `projects/**/*.jsonl` transcript**（含软删除会话与 `agent-*` 子智能体） |
@@ -229,7 +229,7 @@ flowchart TD
 | 字段 | Codex 来源 | Claude 来源 | WorkBuddy 来源 |
 | --- | --- | --- | --- |
 | SessionId | transcript 文件名（UUID） | transcript 文件名（UUID / `agent-*`） | `sessions.id`（或合成 transcript 标识） |
-| Title | `session_index.jsonl` 的 `thread_name` | 首个 `custom-title`，无则留空 | `custom_title` 优先、回退 `title` |
+| Title | `session_index.jsonl` 的 `thread_name` | 首个 `custom-title`，无则留空 | `custom_title` → transcript `aiTitle`（末条）→ `sessions.title` → 首条用户消息（截 42 字） |
 | WorkspacePath | `session_meta.payload.cwd` | 每行 `cwd` | `sessions.cwd` |
 | Lane / Type | `base_instructions` 痕迹判 `Codex/OMX` | 用 `mode` 区分 | `is_playground`/`is_background_automation` 派生 |
 | Model | `turn_context.payload.model`（过滤 synthetic/image） | 末行 `message.model` | `sessions.model` |

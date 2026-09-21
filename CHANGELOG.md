@@ -2,6 +2,16 @@
 
 格式遵循 [Keep a Changelog 2.0.0](https://keepachangelog.com/en/2.0.0/)，版本号遵循 [Semantic Versioning 2.0.0](https://semver.org/spec/v2.0.0.html)。
 
+## [1.4.1] - 2026-09-21
+
+### Changed（变更）
+
+- WorkBuddy 会话标题改为多级回退取值：人工重命名 → AI 更新标题 → 会话库标题 → 首条用户消息。
+
+### Fixed（修复）
+
+- 修复子智能体会话标题显示为一串标识符的问题，改为显示会话标题。
+
 ## [1.4.0] - 2026-09-18
 
 ### Added（新增）
