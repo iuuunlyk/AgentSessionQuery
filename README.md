@@ -173,7 +173,7 @@ asq -Source workbuddy -g -c
 | `Tokens` | 会话累计 token 总量（千分位，右对齐） | transcript token 事件；**v1.2.6 起采用 stateful-delta 解析**（`last_token_usage` 增量主源 + `total_token_usage` 去重 + `cache_read=min(cached,input)` 重建恒等总量） |
 | `WorkspacePath` | 真实工作区路径 | `session_meta.payload.cwd`；列宽紧张时中间截断 `...` |
 
-`-c` / `-s` / `-AsJson` 额外 token 字段：`InputTokens`、`OutputTokens`、`CacheReadTokens`、`CacheWriteTokens`、`ReasoningTokens`。其余既有字段：`GitBranch`、`Mode`、`MessageCount`、`TranscriptPath`、`ResumeCommand`。
+`-AsJson` 额外 token 字段：`InputTokens`、`OutputTokens`、`CacheReadTokens`、`CacheWriteTokens`、`ReasoningTokens`。其余字段：`Lane`、`SessionId`、`Title`、`ThreadName`、`LastActivity`、`WorkspacePath`、`Model`、`Tokens`、`TranscriptPath`、`ResumeCommand`（`-s` 单会话详情仅 claude / workbuddy 可用，codex 不适用）。
 
 ### asq claude（读 `~/.claude`）
 
@@ -181,7 +181,7 @@ asq -Source workbuddy -g -c
 | --- | --- | --- |
 | `SessionId` | 会话真实 UUID（或子智能体 transcript 文件名） | transcript 文件名（递归扫描 `~/.claude/projects/**/*.jsonl`，**含 `agent-*` 子智能体**，排除 `subagents/journal.jsonl`） |
 | `LastActivity` | 最近活动时间（UTC 转本地） | transcript 末行 `timestamp`；缺失则文件时间 |
-| `Title` | 会话标题 | transcript 首个 `custom-title`（用 `/rename` 或 `-n` 设置的名称）；**无则留空**，不回退到 prompt 或 SessionId；子智能体取自 `.meta.json` 的 `agentType`（前缀「子智能体:」） |
+| `Title` | 会话标题 | transcript **末条** `custom-title`（用 `/rename` 或 `-n` 设置的名称，改名记录追加在文件末尾，故取末条才是当前名）；**无则留空**，不回退到 prompt 或 SessionId；子智能体取自 `.meta.json` 的 `agentType`（前缀「子智能体:」） |
 | `Model` | 该会话最后实际跑的真实模型 | transcript 嵌套 `message.model`（滚动 last_model 兜底，排除 `<synthetic>`），末值经模型名规范化（同模型不同拼写归为标准名）；如 `k3-256k`、`moonshotai/kimi-k3` |
 | `Tokens` | 会话累计 token 总量（千分位，右对齐） | **v1.2.8 起**逐行 `(message.id, requestId)` 去重 + 各分量 MAX 合并后求和：`input+output+cache_read+cache_write`（Claude 无 reasoning 桶，恒为 0），不再读 `usage.total_tokens`；**v1.2.9 起覆盖 `agent-*` 子智能体会话** |
 | `WorkspacePath` | 真实工作区路径 | transcript 的 `cwd`；列宽紧张时中间截断 `...` |
@@ -202,7 +202,7 @@ asq -Source workbuddy -g -c
 | `Credits` | 积分消耗（会话合计，两位小数千分位，右对齐；仅 workbuddy 有此列；**可选列，默认隐藏**，`-Credits` 打开） | `session_usage.credit_json` 全部请求值求和；无积分数据（`credit_json` 为空 / NULL）显示 `-`；合成子智能体会话恒为 `-` |
 | `WorkspacePath` | 真实工作区路径 | `sessions.cwd`（有 DB 行者）；列宽紧张时中间截断 `...` |
 
-`-c` / `-s` / `-AsJson` 额外 token 字段：`InputTokens`、`OutputTokens`、`CacheReadTokens`、`CacheWriteTokens`、`ReasoningTokens`（v1.0.4 起补齐，与 codex/claude 口径一致；`CACHE_READ_KEYS`/`CACHE_WRITE_KEYS` 覆盖 `cache_read_input_tokens`/`cache_creation_input_tokens`/`prompt_cache_hit_tokens` 等键；`Input` 已扣除缓存命中，五分量之和恒等于 `Tokens`）；`-AsJson` 另含 `Credits` 字段（积分消耗，会话合计，无数据为 `null`）。其余既有字段：`Type`、`Title`、`Model`、`LastActivity`、`WorkspacePath`。
+`-c` / `-s` / `-AsJson` 额外 token 字段：`InputTokens`、`OutputTokens`、`CacheReadTokens`、`CacheWriteTokens`、`ReasoningTokens`（v1.0.4 起补齐，与 codex/claude 口径一致；`CACHE_READ_KEYS`/`CACHE_WRITE_KEYS` 覆盖 `cache_read_input_tokens`/`cache_creation_input_tokens`/`prompt_cache_hit_tokens` 等键；`Input` 已扣除缓存命中，五分量之和恒等于 `Tokens`）。其余字段：`SessionId`、`Type`、`Title`、`WorkspacePath`、`Model`、`Tokens`、`TokenSource`、`Credits`（积分消耗，会话合计，无数据为 `null`）、`LastActivity`、`Mode`、`SourceMode`、`PermissionMode`、`Status`。
 
 ---
 
@@ -229,7 +229,7 @@ flowchart TD
 | 字段 | Codex 来源 | Claude 来源 | WorkBuddy 来源 |
 | --- | --- | --- | --- |
 | SessionId | transcript 文件名（UUID） | transcript 文件名（UUID / `agent-*`） | `sessions.id`（或合成 transcript 标识） |
-| Title | `session_index.jsonl` 的 `thread_name` | 首个 `custom-title`，无则留空 | `custom_title` → transcript `aiTitle`（末条）→ `sessions.title` → 首条用户消息（截 42 字） |
+| Title | `session_index.jsonl` 的 `thread_name` | 末条 `custom-title`，无则留空 | `custom_title` → transcript `aiTitle`（末条）→ `sessions.title` → 首条用户消息（截 42 字） |
 | WorkspacePath | `session_meta.payload.cwd` | 每行 `cwd` | `sessions.cwd` |
 | Lane / Type | `base_instructions` 痕迹判 `Codex/OMX` | 用 `mode` 区分 | `is_playground`/`is_background_automation` 派生 |
 | Model | `turn_context.payload.model`（过滤 synthetic/image） | 末行 `message.model` | `sessions.model` |

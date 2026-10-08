@@ -2,6 +2,18 @@
 
 格式遵循 [Keep a Changelog 2.0.0](https://keepachangelog.com/en/2.0.0/)，版本号遵循 [Semantic Versioning 2.0.0](https://semver.org/spec/v2.0.0.html)。
 
+## [1.4.2] - 2026-10-08
+
+### Fixed（修复）
+
+- 修复 Codex 会话的中文标题与项目路径可能被改错的问题。
+- 修复 WorkBuddy 列表在 Token 数据退化时不提示的问题。
+- 修复 Claude 恢复命令在会话编号含空格或特殊符号时不可执行的问题。
+
+### Changed（变更）
+
+- Claude 恢复命令中的会话编号改为单引号包裹。
+
 ## [1.4.1] - 2026-09-21
 
 ### Changed（变更）

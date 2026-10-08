@@ -94,7 +94,7 @@ param(
 Set-StrictMode -Version Latest
 
 # 版本号单一真源：发版时仅改此处；帮助文本与 -v/-Version 输出均引用本变量
-$ScriptVersion = 'v1.4.1'
+$ScriptVersion = 'v1.4.2'
 
 if ($PSVersionTable.PSEdition -eq 'Desktop') {
     Write-Warning '建议使用 PowerShell 7 (pwsh) 运行本工具；当前为 Windows PowerShell 5.1，中文可能乱码。'
@@ -258,7 +258,10 @@ function Repair-CodexMojibake {
         return $Value
     }
 
-    $suspiciousPattern = '�|妞ゅ|娲伴|椤|鍗|鍐呴儴|浣庤|璧勬枡|鏍囧噯|鍘嗗彶|绾跨▼|閸|鏉|惃|鍤|顖|妫€|淇?|浠樺?|姒傝堪|鍏抽敭|闃屾柟'
+    # 乱码特征串。不可使用 '?' 量词：'淇?' / '浠樺?' 这类空匹配分支会使 -notmatch
+    # 对任意输入恒为 $false，导致下方「仅在检测到乱码时才修复」的守卫失效，
+    # 对全部标题与路径无条件执行 GBK→UTF-8 重编码。
+    $suspiciousPattern = '�|妞ゅ|娲伴|椤|鍗|鍐呴儴|浣庤|璧勬枡|鏍囧噯|鍘嗗彶|绾跨▼|閸|鏉|惃|鍤|顖|妫€|淇|浠樺|姒傝堪|鍏抽敭|闃屾柟'
     if ($Value -notmatch $suspiciousPattern) {
         return $Value
     }
@@ -970,12 +973,17 @@ function Get-ClaudeResumeCommand {
         [string]$WorkspacePath
     )
 
+    # SessionId 取自未经校验的 transcript 文件名（见调用方 $file.BaseName），
+    # 与 WorkspacePath 一样按 PowerShell 字面量转义后嵌入命令行，
+    # 避免文件名含空格 / 分号时生成不可执行或行为异常的 resume 命令。
+    $quotedId = ConvertTo-ClaudePowerShellLiteral -Value $SessionId
+
     if (-not [string]::IsNullOrWhiteSpace($WorkspacePath)) {
         $quotedPath = ConvertTo-ClaudePowerShellLiteral -Value $WorkspacePath
-        return "Set-Location -LiteralPath $quotedPath; claude --resume $SessionId --dangerously-skip-permissions"
+        return "Set-Location -LiteralPath $quotedPath; claude --resume $quotedId --dangerously-skip-permissions"
     }
 
-    return "claude --resume $SessionId --dangerously-skip-permissions"
+    return "claude --resume $quotedId --dangerously-skip-permissions"
 }
 
 function Get-ClaudeConfiguredModel {
@@ -1360,7 +1368,15 @@ for r in cur.fetchall():
     else:
         if total == 0:
             total = asnum(d.get('used_fallback'))
-    d['token_source'] = 'used_fallback' if (jp is None and total > 0) else 'transcript'
+            # 记录本会话的 Token 数字是否来自 session_usage.used 兜底口径。
+            # 判定依据是「是否真的取了兜底值」，而非「transcript 文件是否存在」——
+            # 文件存在但 compute_tokens 因非法字节抛 UnicodeDecodeError 被吞掉时
+            # total 同样为 0，若按文件存在与否判定会把退化会话误标为 transcript，
+            # 导致降级告警不触发、-AsJson 向下游谎报数据来源。
+            if total > 0:
+                d['token_source'] = 'used_fallback'
+    if 'token_source' not in d:
+        d['token_source'] = 'transcript'
     # 积分（仅 WorkBuddy）：credit_json 形如 {"请求标识": 积分}，会话合计 = 全部值求和。
     # 键有两种格式（32 位十六进制 traceId / req-<epoch_ms><seq> 旧格式），求和不做键格式假设；
     # credit_json 为空 / JSON 非法 / 空字典 → None（无数据），渲染层显示 '-'。
