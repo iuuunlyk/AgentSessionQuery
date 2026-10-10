@@ -9,7 +9,7 @@ AgentsSessionQuery 统一命令（规划 1 单命令重构）
     统一过滤/排序/Limit、统一 Format-SessionCell 截断对齐；按 Source 分发表 / -AsJson / -c 详情 / -s 详情。
   - WorkBuddy 来源专属：Credits 列（积分消耗，取 session_usage.credit_json 全部请求值求和；
     仅 workbuddy 有此数据源，无积分数据显示 '-'；列表 / 详情 / -AsJson 三视图一致）。
-  - WorkBuddy 标题三级回退：custom_title（DB，人工重命名）→ transcript 内 type=ai-title 的
+  - WorkBuddy 标题五级回退：custom_title（DB，人工重命名）→ transcript 内 type=ai-title 的
     aiTitle（取末条，跟进 AI 后续更新）→ sessions.title（防回归兜底）→ 首条真实用户消息
     （必须先剥离 <system-reminder> 等成块内部标签，再截 42 字）→ '(无标题会话)'。
   - 原三脚本（codex-sessions.ps1 / claude-sessions.ps1 / workbuddy-sessions.ps1，转发 wrapper）已退役删除，
@@ -94,7 +94,7 @@ param(
 Set-StrictMode -Version Latest
 
 # 版本号单一真源：发版时仅改此处；帮助文本与 -v/-Version 输出均引用本变量
-$ScriptVersion = 'v1.4.2'
+$ScriptVersion = 'v1.4.3'
 
 if ($PSVersionTable.PSEdition -eq 'Desktop') {
     Write-Warning '建议使用 PowerShell 7 (pwsh) 运行本工具；当前为 Windows PowerShell 5.1，中文可能乱码。'
@@ -216,6 +216,63 @@ function Format-SessionCell {
         }
     }
     return $result
+}
+
+# ============================================================================
+#列表态 SessionId 缩略
+# ============================================================================
+# 列表视图的 SessionId 只用于「两两区分是哪一条会话」，不承担复制 / 粘贴 /
+# 精确定位职责——完整编号在 -c / -s 详情视图与 -AsJson 输出中始终原值保留。
+# 因此列表态按「前 2 字符 + ** + 后 6 字符」缩略，固定占 10 个显示字符位，
+# 把原本 36 位的列宽让给 WorkspacePath。
+#
+# 仅对长编号生效：短于阈值（默认 12 字符）的编号原样返回，避免把本已可读的
+# 短编号（如子智能体的短 ID）截成无意义的碎片。
+function Format-ListSessionId {
+    param(
+        [AllowNull()]
+        [string]$SessionId,
+
+        # 短于此长度则原样显示，不做缩略。
+        [int]$MinLength = 12
+    )
+
+    if ($null -eq $SessionId) {
+        return ''
+    }
+    if ($SessionId.Length -le $MinLength) {
+        return $SessionId
+    }
+    return $SessionId.Substring(0, 2) + '**' + $SessionId.Substring($SessionId.Length - 6)
+}
+
+# ============================================================================
+# 工作区路径分隔符归一化
+# ============================================================================
+# 采集源（codex / claude 的 transcript JSON、workbuddy 的 SQLite sessions.cwd）
+# 中的路径分隔符本身不统一：既有反斜杠也有正斜杠，同一份列表里会混杂出现
+# （例如 Python侧 os.path.dirname 对混合输入原样保留中间的分隔符）。
+# 本项目仅面向 Windows（见 README「开发者说明」），故统一归一为
+# DirectorySeparatorChar（Windows 上即反斜杠）。
+#
+# 注意：这里只做分隔符层面的归一化，不做任何路径语义判断——WorkBuddy 临时
+# 任务生成的工作区（如 .../2026-10-09-21-11-17 形态）是合法值，原样保留。
+function ConvertTo-WindowsPathSeparator {
+    param(
+        [AllowNull()]
+        [string]$Path
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        return $Path
+    }
+    if ($Path.IndexOf('/') -lt 0) {
+        return $Path
+    }
+    return $Path.Replace(
+        [System.IO.Path]::AltDirectorySeparatorChar,
+        [System.IO.Path]::DirectorySeparatorChar
+    )
 }
 
 # ============================================================================
@@ -671,7 +728,7 @@ function Get-CodexSessions {
             Title            = $threadName
             ThreadName       = $threadName
             LastActivity     = $lastActivity
-            WorkspacePath    = $workspacePath
+            WorkspacePath    = (ConvertTo-WindowsPathSeparator -Path $workspacePath)
             Model            = $model
             Tokens           = $tokens.Tokens
             InputTokens      = $tokens.InputTokens
@@ -936,7 +993,7 @@ function Get-ClaudeSessionMeta {
     return [pscustomobject]@{
         SessionId    = $SessionId
         Title        = $title
-        WorkspacePath = $workspacePath
+        WorkspacePath = (ConvertTo-WindowsPathSeparator -Path $workspacePath)
         GitBranch    = $gitBranch
         Mode         = $mode
         LastActivity = $lastActivity
@@ -1105,7 +1162,7 @@ if os.path.isdir(projects):
                 if sid not in session_file_map:
                     session_file_map[sid] = os.path.join(root, fn)
 
-# ── 标题三级回退（+ 防回归兜底）───────────────────────────────────────────
+# ── 标题五级回退（+ 防回归兜底）───────────────────────────────────────────
 # 一级 custom_title（人工重命名，DB）→ 二级 aiTitle（jsonl 末条，AI 后续更新会覆盖）
 # → 三级 DB title（防回归：部分会话 jsonl 为空或不含 ai-title 行，但 DB 存有好标题）
 # → 四级 首条真实用户消息（剥离 system-reminder 等内部标签后截 42 字）→ 兜底 "(无标题会话)"
@@ -1357,7 +1414,7 @@ for r in cur.fetchall():
     jp = session_file_map.get(sid)
     if jp:
         total, inp, outp, cr, cw, rs = compute_tokens(jp)
-    # 标题按三级回退定级（custom_title → aiTitle → DB title → 首条用户消息 → 兜底）
+    # 标题按五级回退定级（custom_title → aiTitle → DB title → 首条用户消息 → 兜底）
     d['resolved_title'] = resolve_title(d.get('custom_title'), d.get('title'), jp)
     if is_deleted:
         if total == 0:
@@ -1440,7 +1497,11 @@ for sid, jp in session_file_map.items():
         'title': None,
         'custom_title': _syn_label,
         'resolved_title': _syn_resolved,
-        'cwd': os.path.dirname(jp),
+        # os.path.dirname 对混合分隔符输入原样保留中间的分隔符（实测
+        # ntpath.dirname('C:/Users/x\\y/z.jsonl') -> 'C:/Users/x\\y'），故显式归一。
+        # 只做分隔符层面的归一化，不做路径语义判断：WorkBuddy 临时任务生成的
+        # 工作区（如 .../2026-10-09-21-11-17 形态）是合法值，原样保留。
+        'cwd': os.path.normpath(os.path.dirname(jp)).replace('/', os.sep),
         'model': model,
         'last_activity_at': _mtime,
         'updated_at': _mtime,
@@ -1535,7 +1596,7 @@ function Get-WorkBuddySessions {
     $sessionRows = $raw | ConvertFrom-Json
 
     $records = foreach ($s in $sessionRows) {
-        # 标题由 Python 侧按三级回退定级（custom_title → aiTitle → DB title → 首条用户消息 → 兜底）
+        # 标题由 Python 侧按五级回退定级（custom_title → aiTitle → DB title → 首条用户消息 → 兜底）
         $title = if ($s.resolved_title) { $s.resolved_title }
                  elseif ($s.custom_title) { $s.custom_title }
                  elseif ($s.title) { $s.title }
@@ -1562,7 +1623,7 @@ function Get-WorkBuddySessions {
             SessionId       = $s.id
             Type            = $sessType
             Title           = $title
-            WorkspacePath   = $s.cwd
+            WorkspacePath   = (ConvertTo-WindowsPathSeparator -Path $s.cwd)
             Model           = $s.model
             Tokens          = if ($s.tokens) { [long]$s.tokens } else { 0 }
             InputTokens     = if ($s.input_tokens) { [long]$s.input_tokens } else { 0 }
@@ -1637,6 +1698,8 @@ asq - 本机 Codex / Claude / WorkBuddy 历史会话统一查询命令
 来源专属选项:
   -s, -SessionId <sessionId>         查看指定会话完整详情（忽略路径过滤；仅 claude / workbuddy）
                                     注：-s 为单会话详情视图，-d / -WithinDays 对其不适用
+                                    匹配：先按完整编号精确匹配，不中则按编号子串模糊匹配（仅 SessionId 字段）
+                                    列表态 SessionId 缩略为「前2**后6」，可照缩略值里的片段模糊定位
   -RootPath <路径>                   Codex / Claude 数据根目录（仅 codex / claude；默认 ~/.codex 或 ~/.claude）
   -DbPath <路径>                     WorkBuddy 数据库文件路径（仅 workbuddy；默认 ~/.workbuddy/workbuddy.db）
   -Type <任务|空间>                   按派生类型筛选（仅 workbuddy：任务 / 空间）
@@ -1851,11 +1914,23 @@ $normalizedCurrentWorkspace = $currentWorkspace.Replace(
 
 if ($hasSessionId -and ($Source -eq 'claude' -or $Source -eq 'workbuddy')) {
     $targetId = $SessionId.Trim().ToLowerInvariant()
+    # 匹配策略：精确全等优先，不中则退回子串模糊匹配。
+    # 为什么需要模糊：列表态SessionId 已缩略为「前2**后6」（见 Format-ListSessionId），
+    # 用户照着列表敲回来的往往是片段而非完整 36 位编号。限定只匹配 SessionId 字段，
+    # 不跨 Title / WorkspacePath—— -s 的定位是「按编号定位会话看详情」，
+    # 跨字段会把标题关键词也变成详情入口，语义含混。
     $matched = @($sessions | Where-Object { $_.SessionId -eq $targetId })
+    if ($matched.Count -eq 0) {
+        $matched = @($sessions | Where-Object {
+            $_.SessionId -and $_.SessionId.ToLowerInvariant().Contains($targetId)
+        })
+    }
     if ($matched.Count -eq 0) {
         Write-Output ('未找到会话: {0}' -f $SessionId)
         exit 0
     }
+    # 子串匹配可能命中多条：逐条输出完整详情（条目之间以分隔线隔开），
+    # 不自动选第一条——自动选取可能悄悄切到别的会话。
     foreach ($session in $matched) {
         Write-Output ('-' * 80)
         if ($Source -eq 'claude') {
@@ -2163,7 +2238,7 @@ try {
 }
 
 if ($Source -eq 'codex') {
-    $widths = @{ Lane = 5; SessionId = 36; LastActivity = 19; Model = 24; Tokens = 14 }
+    $widths = @{ Lane = 5; SessionId = 10; LastActivity = 19; Model = 24; Tokens = 14 }
     $numColumns = 7
     $fixedWidth = $widths.Lane + $widths.SessionId + $widths.LastActivity + $widths.Model + $widths.Tokens + ($numColumns - 1)
     $remainingWidth = [Math]::Max($consoleWidth - $fixedWidth, 56)
@@ -2188,7 +2263,7 @@ if ($Source -eq 'codex') {
     foreach ($session in $sessions) {
         $line = '{0} {1} {2} {3} {4} {5} {6}' -f `
             (Format-SessionCell -Text $session.Lane -Width $widths.Lane), `
-            (Format-SessionCell -Text $session.SessionId -Width $widths.SessionId), `
+            (Format-SessionCell -Text (Format-ListSessionId -SessionId $session.SessionId) -Width $widths.SessionId), `
             (Format-SessionCell -Text ($session.LastActivity.ToString('yyyy-MM-dd HH:mm:ss')) -Width $widths.LastActivity), `
             (Format-SessionCell -Text $session.Title -Width $widths.Title), `
             (Format-SessionCell -Text $session.Model -Width $widths.Model), `
@@ -2197,7 +2272,7 @@ if ($Source -eq 'codex') {
         Write-Output $line
     }
 } elseif ($Source -eq 'claude') {
-    $widths = @{ SessionId = 36; LastActivity = 16; Model = 24; Tokens = 14 }
+    $widths = @{ SessionId = 10; LastActivity = 16; Model = 24; Tokens = 14 }
     $numColumns = 6
     $fixedWidth = $widths.SessionId + $widths.LastActivity + $widths.Model + $widths.Tokens + ($numColumns - 1)
     $remainingWidth = [Math]::Max($consoleWidth - $fixedWidth, 56)
@@ -2220,7 +2295,7 @@ if ($Source -eq 'codex') {
     Write-Output $separator
     foreach ($session in $sessions) {
         $line = '{0} {1} {2} {3} {4} {5}' -f `
-            (Format-SessionCell -Text $session.SessionId -Width $widths.SessionId), `
+            (Format-SessionCell -Text (Format-ListSessionId -SessionId $session.SessionId) -Width $widths.SessionId), `
             (Format-SessionCell -Text ($session.LastActivity.ToString('yyyy-MM-dd HH:mm')) -Width $widths.LastActivity), `
             (Format-SessionCell -Text $session.Title -Width $widths.Title), `
             (Format-SessionCell -Text $session.Model -Width $widths.Model), `
@@ -2235,7 +2310,7 @@ if ($Source -eq 'codex') {
     $showTokens  = $Tokens.IsPresent
     $showCredits = $Credits.IsPresent
 
-    $widths = @{ Type = 5; SessionId = 36; LastActivity = 19; Model = 20; Status = 10; Tokens = 14; Credits = 14 }
+    $widths = @{ Type = 5; SessionId = 10; LastActivity = 19; Model = 20; Status = 10; Tokens = 14; Credits = 14 }
     $optionalWidth = 0
     $optionalCount = 0
     if ($showStatus)  { $optionalWidth += $widths.Status;  $optionalCount++ }
@@ -2283,7 +2358,7 @@ if ($Source -eq 'codex') {
         $creditsText = if ($null -ne $session.Credits) { $session.Credits.ToString('N2') } else { '-' }
         $cells = @(
             (Format-SessionCell -Text $session.Type -Width $widths.Type),
-            (Format-SessionCell -Text $session.SessionId -Width $widths.SessionId),
+            (Format-SessionCell -Text (Format-ListSessionId -SessionId $session.SessionId) -Width $widths.SessionId),
             (Format-SessionCell -Text ($session.LastActivity.ToString('yyyy-MM-dd HH:mm:ss')) -Width $widths.LastActivity),
             (Format-SessionCell -Text $session.Title -Width $widths.Title),
             (Format-SessionCell -Text $session.Model -Width $widths.Model)

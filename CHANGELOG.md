@@ -2,6 +2,18 @@
 
 格式遵循 [Keep a Changelog 2.0.0](https://keepachangelog.com/en/2.0.0/)，版本号遵循 [Semantic Versioning 2.0.0](https://semver.org/spec/v2.0.0.html)。
 
+## [1.4.3] - 2026-10-10
+
+### Changed（变更）
+
+- 列表态的 SessionId 由完整编号改为缩略显示：前 2 个字符 + `**` + 后 6 个字符，占 10 个字符位。`-c` / `-s` 详情与 `-AsJson` 输出仍为完整编号。
+- 列表态的 WorkspacePath 列加宽。
+- `-s` 支持按 SessionId 子串模糊匹配：先按完整编号精确匹配，未命中则按子串匹配，命中多条时逐条输出详情。
+
+### Fixed（修复）
+
+- 修复工作区路径中混用 `\` 与 `/` 的问题，统一为 Windows 路径分隔符。
+
 ## [1.4.2] - 2026-10-08
 
 ### Fixed（修复）

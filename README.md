@@ -141,7 +141,7 @@ asq -Source workbuddy -g -c
 | `-WorkspacePath <路径>` | — | 指定用于筛选的工作区路径（默认当前 PowerShell 路径） |
 | `-q <词>` | — | 按 SessionId / Title / WorkspacePath 统一模糊筛选 |
 | `-t <词>` | `-TitleLike` | 仅按 Title 模糊筛选 |
-| `-s <id>` | `-SessionId` | （仅 Claude / WorkBuddy）查看指定会话完整详情，跨项目查找 |
+| `-s <id>` | `-SessionId` | （仅 Claude / WorkBuddy）查看指定会话完整详情，跨项目查找。先按完整编号精确匹配，未命中则按 SessionId 子串模糊匹配；命中多条时逐条输出详情 |
 | `-SortBy <字段>` | `-o` | `LastActivity`（默认）/ `WorkspacePath` |
 | `-WithinDays <N\|Nd\|关键字>` | `-d` | 按最后活动时间筛选：`today` 今日，`yesterday` 昨日，`week` 本周（周一起），`month` 本月（1 号起），`7` / `7d` / `N` 滚动近 N 天；默认不筛选 |
 | `-ShowCommands` | `-c` | 详细视图（含路径、恢复命令、分支、模式、消息数、**token 统计**等） |
@@ -231,6 +231,8 @@ flowchart TD
 | SessionId | transcript 文件名（UUID） | transcript 文件名（UUID / `agent-*`） | `sessions.id`（或合成 transcript 标识） |
 | Title | `session_index.jsonl` 的 `thread_name` | 末条 `custom-title`，无则留空 | `custom_title` → transcript `aiTitle`（末条）→ `sessions.title` → 首条用户消息（截 42 字） |
 | WorkspacePath | `session_meta.payload.cwd` | 每行 `cwd` | `sessions.cwd` |
+
+**列表态与详情态的差异**（三条数据源通用）：列表态的 `SessionId` 列只显示缩略值（前 2 个字符 + `**` + 后 6 个字符，占 10 个字符位），腾出的列宽给 `WorkspacePath`；`-c` / `-s` 详情视图与 `-AsJson` 输出中的 `SessionId` 与 `WorkspacePath` 均为完整原值，不受列表缩略影响。`WorkspacePath` 的路径分隔符统一为 Windows 风格（`\`）。
 | Lane / Type | `base_instructions` 痕迹判 `Codex/OMX` | 用 `mode` 区分 | `is_playground`/`is_background_automation` 派生 |
 | Model | `turn_context.payload.model`（过滤 synthetic/image） | 末行 `message.model` | `sessions.model` |
 | LastActivity | `session_index` 更新时间 / 文件时间 | 末行 `timestamp`（UTC→本地） | `last_activity_at`→`updated_at`→`created_at` |
