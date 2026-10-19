@@ -94,15 +94,69 @@ param(
 Set-StrictMode -Version Latest
 
 # 版本号单一真源：发版时仅改此处；帮助文本与 -v/-Version 输出均引用本变量
-$ScriptVersion = 'v1.4.3'
+$ScriptVersion = 'v1.5.0'
 
 if ($PSVersionTable.PSEdition -eq 'Desktop') {
     Write-Warning '建议使用 PowerShell 7 (pwsh) 运行本工具；当前为 Windows PowerShell 5.1，中文可能乱码。'
 }
 
 # ============================================================================
+# Unicode East Asian Ambiguous（歧义宽度）字符判定
+#   这类字符（带圈数字 ①-⑳、×、℃、★、§、± 等）在现代终端按 1 格渲染，
+#   但旧实现把所有非 ASCII 字符一律按 2 格计，导致含此类字符的行会多补空格，
+#   该行 Model 及后续列相对其他行整体左移（列表视图肉眼可见的错行）。
+#   数据源：Unicode EastAsianWidth.txt 的 A 类区间（BMP 内共 170 段 / 7282 字）。
+#   全角（F）与宽（W）仍按 2 格，中文与全角标点行为不变。
+# ============================================================================
+$script:SessionAmbiguousWidthSpec = @'
+00A1 00A4 00A7-00A8 00AA 00AD-00AE 00B0-00B4 00B6-00BA 00BC-00BF 00C6 00D0
+00D7-00D8 00DE-00E1 00E6 00E8-00EA 00EC-00ED 00F0 00F2-00F3 00F7-00FA 00FC
+00FE 0101 0111 0113 011B 0126-0127 012B 0131-0133 0138 013F-0142 0144
+0148-014B 014D 0152-0153 0166-0167 016B 01CE 01D0 01D2 01D4 01D6 01D8 01DA
+01DC 0251 0261 02C4 02C7 02C9-02CB 02CD 02D0 02D8-02DB 02DD 02DF 0300-036F
+0391-03A1 03A3-03A9 03B1-03C1 03C3-03C9 0401 0410-044F 0451 2010 2013-2016
+2018-2019 201C-201D 2020-2022 2024-2027 2030 2032-2033 2035 203B 203E 2074
+207F 2081-2084 20AC 2103 2105 2109 2113 2116 2121-2122 2126 212B 2153-2154
+215B-215E 2160-216B 2170-2179 2189 2190-2199 21B8-21B9 21D2 21D4 21E7 2200
+2202-2203 2207-2208 220B 220F 2211 2215 221A 221D-2220 2223 2225 2227-222C
+222E 2234-2237 223C-223D 2248 224C 2252 2260-2261 2264-2267 226A-226B
+226E-226F 2282-2283 2286-2287 2295 2299 22A5 22BF 2312 2460-24E9 24EB-254B
+2550-2573 2580-258F 2592-2595 25A0-25A1 25A3-25A9 25B2-25B3 25B6-25B7
+25BC-25BD 25C0-25C1 25C6-25C8 25CB 25CE-25D1 25E2-25E5 25EF 2605-2606 2609
+260E-260F 261C 261E 2640 2642 2660-2661 2663-2665 2667-266A 266C-266D 266F
+269E-269F 26BF 26C6-26CD 26CF-26D3 26D5-26E1 26E3 26E8-26E9 26EB-26F1 26F4
+26F6-26F9 26FB-26FC 26FE-26FF 273D 2776-277F 2B56-2B59 3248-324F E000-F8FF
+FE00-FE0F FFFD
+'@
+
+$script:SessionAmbiguousWidthSet = $null
+
+function Test-SessionAmbiguousWidthChar {
+    param([int]$CodePoint)
+
+    if ($null -eq $script:SessionAmbiguousWidthSet) {
+        $set = [System.Collections.Generic.HashSet[int]]::new()
+        foreach ($token in ($script:SessionAmbiguousWidthSpec -split '\s+')) {
+            if ([string]::IsNullOrWhiteSpace($token)) {
+                continue
+            }
+            $parts = $token -split '-'
+            $lo = [Convert]::ToInt32($parts[0], 16)
+            $hi = if ($parts.Count -gt 1) { [Convert]::ToInt32($parts[1], 16) } else { $lo }
+            for ($cp = $lo; $cp -le $hi; $cp++) {
+                [void]$set.Add($cp)
+            }
+        }
+        $script:SessionAmbiguousWidthSet = $set
+    }
+
+    return $script:SessionAmbiguousWidthSet.Contains($CodePoint)
+}
+
+# ============================================================================
 # 统一单元格截断/对齐（合并自三脚本同构实现）
-#   - 显示宽度：ASCII(≤0x7F) 算 1，其余（含中文/CJK）算 2，按 Unicode 文本元素切分；
+#   - 显示宽度：ASCII(≤0x7F) 与歧义宽度字符（见上）算 1，其余（含中文/CJK）算 2，
+#     按 Unicode 文本元素切分；
 #   - 常规列超宽时末端截断（Mode='end'，末尾加 '...'）；
 #   - WorkspacePath 路径列中间截断（Mode='middle'）；
 #   - 单元格内换行统一压成空格，避免撑破列宽计算。
@@ -137,6 +191,8 @@ function Format-SessionCell {
             $element = $enumerator.GetTextElement()
             $codePoint = [int][char]$element[0]
             if ($codePoint -le 0x7F) {
+                $width += 1
+            } elseif (Test-SessionAmbiguousWidthChar -CodePoint $codePoint) {
                 $width += 1
             } else {
                 $width += 2
@@ -1462,6 +1518,75 @@ for r in cur.fetchall():
     d['deleted'] = 1 if is_deleted else 0
     rows.append(d)
 
+# ── 子智能体状态派生 ────────────────────────────────────────────────────────
+# 子智能体无 DB 行、自身 transcript 无会话级状态字段；状态从父会话派生：
+#   ① 父 transcript 的 Agent 工具结果（function_call_result，name=Agent，
+#      输出含 [Agent ID: agent-<id>]）：status=completed → completed；
+#      结果存在但非 completed → error（防御态，实测 0 次出现）
+#   ② 无结果证据：借父 sessions.status——working → working；其余 → completed
+#   ③ 父会话不可知（无 DB 行且无 transcript）→ ''（渲染层显示 '-'，与 Credits 口径一致）
+# 父会话 id 由路径直接给出：projects/<项目>/<父会话id>/subagents/agent-<id>.jsonl。
+# 父 transcript 懒扫 + 按父去重缓存；'[Agent ID:' 子串预筛，只解析命中行。
+db_status_map = {}
+for _r in rows:
+    db_status_map[_r['id']] = _r.get('status') or ''
+
+_AGENT_ID_RE = re.compile(r'\[Agent ID: (agent-[0-9a-fA-F-]+)\]')
+
+def _wb_scan_agent_results(jp):
+    """扫单个父 transcript，返回 {agent_sid: result_status}；异常一律降级空 dict"""
+    out = {}
+    try:
+        with open(jp, 'r', encoding='utf-8', errors='replace') as f:
+            for line in f:
+                if '[Agent ID:' not in line:
+                    continue
+                try:
+                    o = json.loads(line)
+                except Exception:
+                    continue
+                if not isinstance(o, dict):
+                    continue
+                if o.get('type') != 'function_call_result' or o.get('name') != 'Agent':
+                    continue
+                output = o.get('output')
+                if isinstance(output, dict):
+                    text = output.get('text')
+                elif isinstance(output, str):
+                    text = output
+                else:
+                    text = None
+                if not isinstance(text, str):
+                    continue
+                for m in _AGENT_ID_RE.finditer(text):
+                    out[m.group(1)] = o.get('status') or ''
+    except Exception:
+        pass
+    return out
+
+_agent_results_cache = {}
+
+def _wb_derive_subagent_status(sid, jp):
+    """子智能体状态派生；无法派生返回 ''（列表渲染 '-'）。"""
+    sub_dir = os.path.dirname(jp)
+    if os.path.basename(sub_dir) != 'subagents':
+        return ''
+    parent_sid = os.path.basename(os.path.dirname(sub_dir))
+    if not parent_sid:
+        return ''
+    if parent_sid not in _agent_results_cache:
+        pjp = session_file_map.get(parent_sid)
+        _agent_results_cache[parent_sid] = _wb_scan_agent_results(pjp) if pjp else {}
+    results = _agent_results_cache[parent_sid]
+    if sid in results:
+        return 'completed' if results[sid] == 'completed' else 'error'
+    pstatus = db_status_map.get(parent_sid)
+    if pstatus is None:
+        return ''
+    if pstatus == 'working':
+        return 'working'
+    return 'completed'
+
 for sid, jp in session_file_map.items():
     if sid in db_ids:
         continue
@@ -1478,7 +1603,15 @@ for sid, jp in session_file_map.items():
                 except Exception:
                     continue
                 if isinstance(_o, dict):
-                    _m = _o.get('model')
+                    # 模型回退链：providerData.model（官方记录的实际生效模型；
+                    # 子智能体 transcript 只在此处写模型）→ requestModelId →
+                    # requestModelName → 顶层 model → message.model（旧口径兜底）
+                    _pd = _o.get('providerData') if isinstance(_o.get('providerData'), dict) else None
+                    _m = None
+                    if _pd:
+                        _m = _pd.get('model') or _pd.get('requestModelId') or _pd.get('requestModelName')
+                    if not _m:
+                        _m = _o.get('model')
                     if not _m and isinstance(_o.get('message'), dict):
                         _m = _o['message'].get('model')
                     if _m:
@@ -1509,7 +1642,7 @@ for sid, jp in session_file_map.items():
         'mode': '',
         'source_mode': '',
         'permission_mode': '',
-        'status': '',
+        'status': _wb_derive_subagent_status(sid, jp),
         'expert_id': '',
         'is_background_automation': 1 if is_agent else 0,
         'is_playground': 0,

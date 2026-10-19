@@ -2,6 +2,17 @@
 
 格式遵循 [Keep a Changelog 2.0.0](https://keepachangelog.com/en/2.0.0/)，版本号遵循 [Semantic Versioning 2.0.0](https://semver.org/spec/v2.0.0.html)。
 
+## [1.5.0] - 2026-10-19
+
+### Added（新增）
+
+- 新增 WorkBuddy 子智能体的状态派生，列表与详情可见其运行状态。
+
+### Fixed（修复）
+
+- 修复 WorkBuddy 子智能体的 Model 列恒为空的问题。
+- 修复会话标题含 ① 等符号时列表各列错位的问题。
+
 ## [1.4.3] - 2026-10-10
 
 ### Changed（变更）
