@@ -2,6 +2,20 @@
 
 格式遵循 [Keep a Changelog 2.0.0](https://keepachangelog.com/en/2.0.0/)，版本号遵循 [Semantic Versioning 2.0.0](https://semver.org/spec/v2.0.0.html)。
 
+## [1.5.1] - 2026-10-26
+
+### Added（新增）
+
+- 新增 WorkBuddy 会话的 Turns（轮次）与 Requests（请求数）统计：
+  - `-s` / `-c` 详情视图与 `-AsJson` 输出恒含；
+  - 列表新增 `-Turns` / `-Requests` 可选列开关（默认隐藏）。
+
+### Changed（变更）
+
+- WorkBuddy 自定义模型在列表与详情视图显示为 `BYOK:<模型名>`（原 `custom-local:<模型名>`）；`-AsJson` 输出保持原值。
+- 详情视图（`-s` / `-c`）的 token 子字段缩进为 Tokens 的从属项，全部数字右对齐，Credits 与 Tokens 字段组相邻（三数据源同步）。
+- 列表数字列宽按当前页内容自适应（WorkBuddy 的 Tokens / Credits / Turns / Requests 列与 codex / claude 的 Tokens 列）。
+
 ## [1.5.0] - 2026-10-19
 
 ### Added（新增）

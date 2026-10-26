@@ -131,7 +131,7 @@ asq -Source workbuddy -g -c
 
 ## 通用参数
 
-三个数据源的参数几乎一致（Claude / WorkBuddy 各多一个 `-s/-SessionId`；WorkBuddy 额外有 `-Type` 按任务 / 空间筛选，以及三个列表可选列开关 `-HideStatus` / `-Tokens` / `-Credits`）。
+三个数据源的参数几乎一致（Claude / WorkBuddy 各多一个 `-s/-SessionId`；WorkBuddy 额外有 `-Type` 按任务 / 空间筛选，以及五个列表可选列开关 `-HideStatus` / `-Tokens` / `-Credits` / `-Turns` / `-Requests`）。
 
 | 参数 | 别名 | 说明 |
 | --- | --- | --- |
@@ -152,8 +152,10 @@ asq -Source workbuddy -g -c
 | `-HideStatus` | — | （仅 WorkBuddy 列表）隐藏 `Status` 列（该列默认显示） |
 | `-Tokens` | — | （仅 WorkBuddy 列表）显示 `Tokens` 列（该列默认隐藏） |
 | `-Credits` | — | （仅 WorkBuddy 列表）显示 `Credits` 列（该列默认隐藏） |
+| `-Turns` | — | （仅 WorkBuddy 列表）显示 `Turns` 列（该列默认隐藏） |
+| `-Requests` | — | （仅 WorkBuddy 列表）显示 `Requests` 列（该列默认隐藏） |
 
-> **WorkBuddy 列表可选列**：`Status` 默认显示，用 `-HideStatus` 关闭；`Tokens` 与 `Credits` 默认隐藏，用 `-Tokens` / `-Credits` 打开。三个开关**只影响列表渲染**——`-s` / `-c` 详情视图与 `-AsJson` 输出恒为全字段，不受影响；对 codex / claude 源无效（两源无 `Status` / `Credits` 字段，静默忽略、不报错）。
+> **WorkBuddy 列表可选列**：`Status` 默认显示，用 `-HideStatus` 关闭；`Tokens` / `Credits` / `Turns` / `Requests` 默认隐藏，用同名开关打开。五个开关**只影响列表渲染**——`-s` / `-c` 详情视图与 `-AsJson` 输出恒为全字段，不受影响；对 codex / claude 源无效（两源无对应字段，静默忽略、不报错）。数字列（Tokens / Credits / Turns / Requests）列宽按当前页内容自适应：取表头名与本页最长数值的较大者（codex / claude 列表的 Tokens 列同此规则）。
 
 > **`-d` / `-WithinDays` 口径**：`today` / `yesterday` 按**自然日 00:00** 切分；`week` 为**自然周**（本周一 00:00 起，周一为一周之首）；`month` 为**自然月**（本月 1 号 00:00 起）；数字 `7` / `7d` / `N` 为**滚动近 N 天**。所有形态都取「不早于某时刻」的下界，因此时间未知的会话不会命中。`-d` 作用于列表视图，对 `-s` 单会话详情视图不适用。
 
@@ -196,13 +198,15 @@ asq -Source workbuddy -g -c
 | `SessionId` | 会话真实 ID（或子智能体 transcript 标识） | `sessions.id`（DB 行）或 transcript 文件名（合成会话） |
 | `LastActivity` | 最近活动时间（epoch 毫秒转本地） | `last_activity_at` → `updated_at` → `created_at`（有 DB 行者） |
 | `Title` | 会话标题 | 按优先级回退：`custom_title`（人工重命名）→ transcript 内 `ai-title` 的 `aiTitle`（取**末条**，跟进 AI 后续更新）→ `sessions.title` → 首条真实用户消息（剥离 `<system-reminder>` 等内部标签后截 42 字）→ `(无标题会话)`；软删除会话附 `[已软删除]`；子智能体前缀「子智能体: <id>」 |
-| `Model` | 会话模型 | `sessions.model`（有 DB 行者）；合成会话无 |
-| `Status` | 会话状态（原样显示，如 `completed` / `working` / `archived` / `error`；**默认显示**，`-HideStatus` 可关闭） | `sessions.status`；无状态值（合成 `agent-*` 子智能体会话）显示 `-` |
+| `Model` | 会话模型 | `sessions.model`（有 DB 行者）；合成会话取 transcript `providerData.model`（回退 `requestModelId` / `requestModelName`）；视图层把 `custom-local:<名>` 显示为 `BYOK:<名>`（`-AsJson` 保持原值） |
+| `Status` | 会话状态（原样显示，如 `completed` / `working` / `archived` / `error`；**默认显示**，`-HideStatus` 可关闭） | `sessions.status`；合成 `agent-*` 子智能体会话为派生值：父 transcript 有其 Agent 结果证据时按结果状态，否则借父会话 `status`，父不可知显示 `-` |
 | `Tokens` | 会话累计 token 总量（千分位，右对齐；**可选列，默认隐藏**，`-Tokens` 打开） | **v1.0.4 起解析 `projects/*.jsonl` transcript** 计算（行筛 + status 跳过 + usage 取法优先级 + `input_exclusive` 缓存减法 + reasoning 桶 + 去重保留较大 total）；**v1.0.5 起采集范围扩展为全部 `projects/**/*.jsonl` transcript**（含软删除会话与 `agent-*` 子智能体） |
 | `Credits` | 积分消耗（会话合计，两位小数千分位，右对齐；仅 workbuddy 有此列；**可选列，默认隐藏**，`-Credits` 打开） | `session_usage.credit_json` 全部请求值求和；无积分数据（`credit_json` 为空 / NULL）显示 `-`；合成子智能体会话恒为 `-` |
+| `Turns` | 会话轮次数（有请求的轮次；右对齐；仅 workbuddy 有此列；**可选列，默认隐藏**，`-Turns` 打开） | transcript 逐行扫描：提问边界 = `<user_query>` 包裹的非空文本，或剥离 `<system-reminder>` 等内部注入后的非空纯文本 user 记录；首个提问前的用量归轮次 0 且计入总数；无请求的提问不计入 |
+| `Requests` | 模型调用请求数（右对齐；仅 workbuddy 有此列；**可选列，默认隐藏**，`-Requests` 打开） | 与 Tokens 同批记录：去重后带 usage 的模型调用条数 |
 | `WorkspacePath` | 真实工作区路径 | `sessions.cwd`（有 DB 行者）；列宽紧张时中间截断 `...` |
 
-`-c` / `-s` / `-AsJson` 额外 token 字段：`InputTokens`、`OutputTokens`、`CacheReadTokens`、`CacheWriteTokens`、`ReasoningTokens`（v1.0.4 起补齐，与 codex/claude 口径一致；`CACHE_READ_KEYS`/`CACHE_WRITE_KEYS` 覆盖 `cache_read_input_tokens`/`cache_creation_input_tokens`/`prompt_cache_hit_tokens` 等键；`Input` 已扣除缓存命中，五分量之和恒等于 `Tokens`）。其余字段：`SessionId`、`Type`、`Title`、`WorkspacePath`、`Model`、`Tokens`、`TokenSource`、`Credits`（积分消耗，会话合计，无数据为 `null`）、`LastActivity`、`Mode`、`SourceMode`、`PermissionMode`、`Status`。
+`-c` / `-s` / `-AsJson` 额外 token 字段：`InputTokens`、`OutputTokens`、`CacheReadTokens`、`CacheWriteTokens`、`ReasoningTokens`（v1.0.4 起补齐，与 codex/claude 口径一致；`CACHE_READ_KEYS`/`CACHE_WRITE_KEYS` 覆盖 `cache_read_input_tokens`/`cache_creation_input_tokens`/`prompt_cache_hit_tokens` 等键；`Input` 已扣除缓存命中，五分量之和恒等于 `Tokens`）。其余字段：`SessionId`、`Type`、`Title`、`WorkspacePath`、`Model`、`Tokens`、`TokenSource`、`Credits`（积分消耗，会话合计，无数据为 `null`）、`Requests`（模型调用请求数）、`Turns`（会话轮次数）、`LastActivity`、`Mode`、`SourceMode`、`PermissionMode`、`Status`。
 
 ---
 
@@ -239,6 +243,8 @@ flowchart TD
 | Status | 无此字段 | 无此字段 | `sessions.status`（列表**默认显示**，`-HideStatus` 关闭） |
 | Tokens | stateful-delta 解析（增量主源 + 去重） | 去重 + 分量之和（含 `agent-*`） | 全部 `projects/*.jsonl` transcript 解析（列表**默认隐藏**，`-Tokens` 打开） |
 | Credits | 无此字段 | 无此字段 | `session_usage.credit_json` 求和（无数据显示 `-`/`null`；列表**默认隐藏**，`-Credits` 打开） |
+| Turns | 无此字段 | 无此字段 | transcript 提问边界切分（有请求的轮次；列表**默认隐藏**，`-Turns` 打开） |
+| Requests | 无此字段 | 无此字段 | 去重后带 usage 的调用条数（列表**默认隐藏**，`-Requests` 打开） |
 
 ---
 
