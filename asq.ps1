@@ -7,8 +7,12 @@ AgentsSessionQuery 统一命令（规划 1 单命令重构）
   - 三套采集算法（含 token 解析口径）逐字移植自原三脚本，字段 schema 与输出格式零回归；
   - 统一参数容错（Limit 非数字 → 人话报错，列出本次开关含 -Source）、统一三态数据源检测、
     统一过滤/排序/Limit、统一 Format-SessionCell 截断对齐；按 Source 分发表 / -AsJson / -c 详情 / -s 详情。
-  - WorkBuddy 来源专属：Credits 列（积分消耗，取 session_usage.credit_json 全部请求值求和；
-    仅 workbuddy 有此数据源，无积分数据显示 '-'；列表 / 详情 / -AsJson 三视图一致）。
+  - WorkBuddy 来源专属：Credits 列为「显示积分」（WorkBuddy 界面所采用的统计口径，取
+    session_usage.credit_json 全部请求值求和；该会话派发的子智能体消耗合并计入该会话名下，
+    子智能体行无此记录、显示 '-'）；ActualCredits 为「实际积分」（对该会话自身每次请求
+    所扣积分逐条相加所得的总数，来源为会话日志文件逐请求扣费记录；子智能体各自独立成行、
+    仅统计自身消耗；本地日志对部分请求记 0 而平台实际扣费，故本口径为下限值）。
+    列表 / 详情 / -AsJson 三视图一致；列表加 -ActualCredits 可将 Credits 列切换为实际积分。
   - WorkBuddy 标题五级回退：custom_title（DB，人工重命名）→ transcript 内 type=ai-title 的
     aiTitle（取末条，跟进 AI 后续更新）→ sessions.title（防回归兜底）→ 首条真实用户消息
     （必须先剥离 <system-reminder> 等成块内部标签，再截 42 字）→ '(无标题会话)'。
@@ -71,11 +75,24 @@ param(
 
     [switch]$Tokens,
 
+    # Credits 列默认按「显示积分」口径：WorkBuddy 界面所采用的统计口径，
+    # 该会话派发的子智能体所消耗的积分合并计入该会话名下（故子智能体行无此数据、显示 -）。
     [switch]$Credits,
+
+    # -ActualCredits：Credits 列改按「实际积分」口径显示并自动展开该列（无需再带 -Credits）。
+    # 实际积分 = 对该会话自身每次请求所扣积分逐条相加所得的总数（来源：会话日志文件
+    # ~/.workbuddy/projects/ 下 jsonl 的逐请求扣费记录）；子智能体各自独立成行、仅统计自身消耗，
+    # 故子智能体行在本口径下有数值。本地日志对部分请求记 0 而平台实际扣费，本口径为下限值。
+    [switch]$ActualCredits,
 
     [switch]$Turns,
 
     [switch]$Requests,
+
+    # 列表态 SessionId 默认缩略为「前 2 字符 + ** + 后 6 字符」（占 10 字符位，让宽给 WorkspacePath）；
+    # 带本开关则三源列表统一显示完整编号（表格整体变宽，窄窗口下 WorkspacePath 截断加剧，由调用者自担）。
+    # 仅作用于列表渲染；-s / -c 详情与 -AsJson 本就输出完整编号，不受影响。
+    [switch]$FullSessionId,
 
     # 按最后活动时间筛选：接受整数天数（7 / 7d）与关键字（today / yesterday / week / month）。
     # 用 [object] 而非 [string]：与 -Limit 同思路，让 -d 7 绑定为 int、-d 7d 绑定为 string，统一 ToString() 后校验。
@@ -98,7 +115,7 @@ param(
 Set-StrictMode -Version Latest
 
 # 版本号单一真源：发版时仅改此处；帮助文本与 -v/-Version 输出均引用本变量
-$ScriptVersion = 'v1.5.1'
+$ScriptVersion = 'v1.6.0'
 
 if ($PSVersionTable.PSEdition -eq 'Desktop') {
     Write-Warning '建议使用 PowerShell 7 (pwsh) 运行本工具；当前为 Windows PowerShell 5.1，中文可能乱码。'
@@ -294,13 +311,16 @@ function Format-ListSessionId {
         [string]$SessionId,
 
         # 短于此长度则原样显示，不做缩略。
-        [int]$MinLength = 12
+        [int]$MinLength = 12,
+
+        # -FullSessionId 开关透传：为真时不做缩略，原样返回完整编号。
+        [switch]$Full
     )
 
     if ($null -eq $SessionId) {
         return ''
     }
-    if ($SessionId.Length -le $MinLength) {
+    if ($Full -or $SessionId.Length -le $MinLength) {
         return $SessionId
     }
     return $SessionId.Substring(0, 2) + '**' + $SessionId.Substring($SessionId.Length - 6)
@@ -1401,6 +1421,7 @@ def compute_tokens(jsonl_path):
     messages = []
     current_turn = 0          # 轮次计数器；0 = 首个提问之前的记录（压缩前历史 / 无提问会话）
     turns_with_requests = set()
+    actual_credits = 0.0      # 实际积分：逐请求扣费记录（rawUsage.credit）直接累加
     try:
         with open(jsonl_path, 'r', encoding='utf-8') as f:
             for line in f:
@@ -1413,6 +1434,21 @@ def compute_tokens(jsonl_path):
                     continue
                 if not isinstance(o, dict):
                     continue
+                # ── 实际积分累加（先于一切类型/状态过滤）──
+                # 每行 providerData.rawUsage.credit 是一小笔独立扣费：同一次请求
+                # （conversationRequestId）会拆成多条模型调用记录、各带一笔，
+                # 逐行累加与按请求分组求和数学等价。已用真实数据逐请求核对：
+                # 与 credit_json（界面口径）逐请求对比 50/53 分毫不差，差异仅来自
+                # 少数单边记录的边界请求。下方 token 统计的 messageId 去重针对的是
+                # 同一消息重复上报，不适用于 credit——故 credit 在过滤与去重之前累加。
+                _pd0 = o.get('providerData')
+                if isinstance(_pd0, dict):
+                    _ru0 = _pd0.get('rawUsage')
+                    if isinstance(_ru0, dict) and _ru0.get('credit') is not None:
+                        try:
+                            actual_credits += float(_ru0['credit'])
+                        except (TypeError, ValueError):
+                            pass
                 ltype = o.get('type')
                 role = o.get('role')
                 status = o.get('status')
@@ -1477,7 +1513,7 @@ def compute_tokens(jsonl_path):
         rs += t['reasoning']
     requests = len(messages)
     turns = len(turns_with_requests)
-    return total, inp, outp, cr, cw, rs, requests, turns
+    return total, inp, outp, cr, cw, rs, requests, turns, round(actual_credits, 2)
 
 uri = Path(db).resolve().as_uri() + '?mode=ro'
 con = sqlite3.connect(uri, uri=True, timeout=5)
@@ -1501,9 +1537,12 @@ for r in cur.fetchall():
     db_ids.add(sid)
     is_deleted = d.get('deleted_at') is not None
     total, inp, outp, cr, cw, rs, requests, turns = 0, 0, 0, 0, 0, 0, 0, 0
+    # 无 transcript 文件时实际积分不可计算，保持 None（渲染层显示 '-'），
+    # 与「有文件但全是免费模型请求 → 0.00」区分开。
+    acredits = None
     jp = session_file_map.get(sid)
     if jp:
-        total, inp, outp, cr, cw, rs, requests, turns = compute_tokens(jp)
+        total, inp, outp, cr, cw, rs, requests, turns, acredits = compute_tokens(jp)
     # 标题按五级回退定级（custom_title → aiTitle → DB title → 首条用户消息 → 兜底）
     d['resolved_title'] = resolve_title(d.get('custom_title'), d.get('title'), jp)
     if is_deleted:
@@ -1524,9 +1563,11 @@ for r in cur.fetchall():
                 d['token_source'] = 'used_fallback'
     if 'token_source' not in d:
         d['token_source'] = 'transcript'
-    # 积分（仅 WorkBuddy）：credit_json 形如 {"请求标识": 积分}，会话合计 = 全部值求和。
+    # 显示积分（仅 WorkBuddy，界面口径）：credit_json 形如 {"请求标识": 积分}，会话合计 = 全部值求和。
+    # 界面口径把该会话派发的子智能体消耗合并计入派发那一轮的父请求条目，故子智能体
+    # 自身无 credit_json 记录（实测 3.99 万条子智能体请求 ID 在全部 credit_json 命中 0）。
     # 键有两种格式（32 位十六进制 traceId / req-<epoch_ms><seq> 旧格式），求和不做键格式假设；
-    # credit_json 为空 / JSON 非法 / 空字典 → None（无数据），渲染层显示 '-'。
+    # credit_json 为空 / JSON 非法 / 空字典 → None（界面无此会话的积分记录），渲染层显示 '-'。
     _cj = d.get('credit_json')
     _credits = None
     if _cj:
@@ -1543,6 +1584,7 @@ for r in cur.fetchall():
         except Exception:
             _credits = None
     d['credits'] = _credits
+    d['actual_credits'] = acredits
     d['tokens'] = total
     d['input_tokens'] = inp
     d['output_tokens'] = outp
@@ -1626,7 +1668,7 @@ def _wb_derive_subagent_status(sid, jp):
 for sid, jp in session_file_map.items():
     if sid in db_ids:
         continue
-    total, inp, outp, cr, cw, rs, requests, turns = compute_tokens(jp)
+    total, inp, outp, cr, cw, rs, requests, turns, acredits = compute_tokens(jp)
     if total == 0:
         continue
     is_agent = sid.startswith('agent-')
@@ -1685,6 +1727,7 @@ for sid, jp in session_file_map.items():
         'deleted_at': None,
         'used_fallback': 0,
         'credits': None,
+        'actual_credits': acredits,
         'token_source': 'transcript',
         'tokens': total,
         'input_tokens': inp,
@@ -1805,6 +1848,7 @@ function Get-WorkBuddySessions {
             Requests        = if ($null -ne $s.requests) { [long]$s.requests } else { 0 }
             Turns           = if ($null -ne $s.turns) { [long]$s.turns } else { 0 }
             Credits         = if ($null -ne $s.credits) { [double]$s.credits } else { $null }
+            ActualCredits   = if ($null -ne $s.actual_credits) { [double]$s.actual_credits } else { $null }
             TokenSource     = if ($s.token_source) { $s.token_source } else { 'transcript' }
             LastActivity    = $lastActivity
             Mode            = $s.mode
@@ -1878,10 +1922,17 @@ asq - 本机 Codex / Claude / WorkBuddy 历史会话统一查询命令
   -Type <任务|空间>                   按派生类型筛选（仅 workbuddy：任务 / 空间）
   -HideStatus                        隐藏 WorkBuddy 列表的 Status 列（该列默认显示）
   -Tokens                            显示 WorkBuddy 列表的 Tokens 列（该列默认隐藏）
-  -Credits                           显示 WorkBuddy 列表的 Credits 列（该列默认隐藏）
+  -Credits                           显示 WorkBuddy 列表的 Credits 列（显示积分，该列默认隐藏）。
+                                     显示积分 = WorkBuddy 界面所采用的统计口径：该会话派发的
+                                     子智能体所消耗的积分合并计入该会话名下，子智能体行显示 -
+  -ActualCredits                     Credits 列改按实际积分显示并自动展开该列（仅 workbuddy 列表）。
+                                     实际积分 = 对该会话自身每次请求所扣积分逐条相加所得的总数；
+                                     子智能体各自独立成行、仅统计自身消耗；本口径为下限值
   -Turns                             显示 WorkBuddy 列表的 Turns 列（轮次，该列默认隐藏）
   -Requests                          显示 WorkBuddy 列表的 Requests 列（请求数，该列默认隐藏）
                                      （这些开关仅影响 workbuddy 列表；-s / -c 详情与 -AsJson 恒为全字段）
+  -FullSessionId                     列表显示完整 SessionId（默认缩略为「前2**后6」；
+                                     codex / claude / workbuddy 三源列表均生效）
 "@
 }
 
@@ -2119,12 +2170,12 @@ if ($hasSessionId -and ($Source -eq 'claude' -or $Source -eq 'workbuddy')) {
             Write-Output ('{0,-17} {1}' -f 'WorkspacePath:', $session.WorkspacePath)
             Write-Output ('{0,-17} {1}' -f 'RoutingName:', $session.RoutingName)
             Write-Output ('{0,-17} {1}' -f 'Model:', (ConvertTo-DisplayModel $session.Model))
-            Write-Output ('{0,-17} {1,15}' -f 'Tokens:', $session.Tokens.ToString('N0'))
-            Write-Output ('{0,-17} {1,15}' -f '  InputTokens:', $session.InputTokens.ToString('N0'))
-            Write-Output ('{0,-17} {1,15}' -f '  OutputTokens:', $session.OutputTokens.ToString('N0'))
-            Write-Output ('{0,-17} {1,15}' -f '  CacheReadTokens:', $session.CacheReadTokens.ToString('N0'))
-            Write-Output ('{0,-17} {1,15}' -f '  CacheWriteTokens:', $session.CacheWriteTokens.ToString('N0'))
-            Write-Output ('{0,-17} {1,15}' -f '  ReasoningTokens:', $session.ReasoningTokens.ToString('N0'))
+            Write-Output ('{0,-22} {1,15}' -f 'Tokens:', $session.Tokens.ToString('N0'))
+            Write-Output ('{0,-22} {1,15}' -f '  ├─ InputTokens:', $session.InputTokens.ToString('N0'))
+            Write-Output ('{0,-22} {1,15}' -f '  ├─ OutputTokens:', $session.OutputTokens.ToString('N0'))
+            Write-Output ('{0,-22} {1,15}' -f '  ├─ CacheReadTokens:', $session.CacheReadTokens.ToString('N0'))
+            Write-Output ('{0,-22} {1,15}' -f '  ├─ CacheWriteTokens:', $session.CacheWriteTokens.ToString('N0'))
+            Write-Output ('{0,-22} {1,15}' -f '  └─ ReasoningTokens:', $session.ReasoningTokens.ToString('N0'))
             Write-Output ('{0,-17} {1}' -f 'GitBranch:', $session.GitBranch)
             Write-Output ('{0,-17} {1}' -f 'Mode:', $session.Mode)
             Write-Output ('{0,-17} {1}' -f 'MessageCount:', $session.MessageCount)
@@ -2137,15 +2188,16 @@ if ($hasSessionId -and ($Source -eq 'claude' -or $Source -eq 'workbuddy')) {
             Write-Output ('{0,-17} {1}' -f 'Title:', $session.Title)
             Write-Output ('{0,-17} {1}' -f 'WorkspacePath:', $session.WorkspacePath)
             Write-Output ('{0,-17} {1}' -f 'Model:', (ConvertTo-DisplayModel $session.Model))
-            Write-Output ('{0,-17} {1,15}' -f 'Tokens:', $session.Tokens.ToString('N0'))
-            Write-Output ('{0,-17} {1,15}' -f '  InputTokens:', $session.InputTokens.ToString('N0'))
-            Write-Output ('{0,-17} {1,15}' -f '  OutputTokens:', $session.OutputTokens.ToString('N0'))
-            Write-Output ('{0,-17} {1,15}' -f '  CacheReadTokens:', $session.CacheReadTokens.ToString('N0'))
-            Write-Output ('{0,-17} {1,15}' -f '  CacheWriteTokens:', $session.CacheWriteTokens.ToString('N0'))
-            Write-Output ('{0,-17} {1,15}' -f '  ReasoningTokens:', $session.ReasoningTokens.ToString('N0'))
-            Write-Output ('{0,-17} {1,15}' -f 'Credits:', $(if ($null -ne $session.Credits) { $session.Credits.ToString('N2') } else { '-' }))
-            Write-Output ('{0,-17} {1,15}' -f 'Requests:', $session.Requests.ToString('N0'))
-            Write-Output ('{0,-17} {1,15}' -f 'Turns:', $session.Turns.ToString('N0'))
+            Write-Output ('{0,-22} {1,15}' -f 'Tokens:', $session.Tokens.ToString('N0'))
+            Write-Output ('{0,-22} {1,15}' -f '  ├─ InputTokens:', $session.InputTokens.ToString('N0'))
+            Write-Output ('{0,-22} {1,15}' -f '  ├─ OutputTokens:', $session.OutputTokens.ToString('N0'))
+            Write-Output ('{0,-22} {1,15}' -f '  ├─ CacheReadTokens:', $session.CacheReadTokens.ToString('N0'))
+            Write-Output ('{0,-22} {1,15}' -f '  ├─ CacheWriteTokens:', $session.CacheWriteTokens.ToString('N0'))
+            Write-Output ('{0,-22} {1,15}' -f '  └─ ReasoningTokens:', $session.ReasoningTokens.ToString('N0'))
+            Write-Output ('{0,-22} {1,15}' -f 'Credits:', $(if ($null -ne $session.Credits) { $session.Credits.ToString('N2') } else { '-' }))
+            Write-Output ('{0,-22} {1,15}' -f 'ActualCredits:', $(if ($null -ne $session.ActualCredits) { $session.ActualCredits.ToString('N2') } else { '-' }))
+            Write-Output ('{0,-22} {1,15}' -f 'Requests:', $session.Requests.ToString('N0'))
+            Write-Output ('{0,-22} {1,15}' -f 'Turns:', $session.Turns.ToString('N0'))
             Write-Output ('{0,-17} {1}' -f 'Mode:', $session.Mode)
             Write-Output ('{0,-17} {1}' -f 'SourceMode:', $session.SourceMode)
             Write-Output ('{0,-17} {1}' -f 'PermissionMode:', $session.PermissionMode)
@@ -2335,6 +2387,7 @@ if ($AsJson) {
                 CacheWriteTokens= $_.CacheWriteTokens
                 ReasoningTokens = $_.ReasoningTokens
                 Credits         = $_.Credits
+                ActualCredits   = $_.ActualCredits
                 Requests        = $_.Requests
                 Turns           = $_.Turns
                 LastActivity    = $_.LastActivity.ToString('yyyy-MM-dd HH:mm:ss')
@@ -2362,12 +2415,12 @@ if ($ShowCommands) {
             Write-Output ('{0,-17} {1}' -f 'Title:', $session.Title)
             Write-Output ('{0,-17} {1}' -f 'WorkspacePath:', $session.WorkspacePath)
             Write-Output ('{0,-17} {1}' -f 'Model:', (ConvertTo-DisplayModel $session.Model))
-            Write-Output ('{0,-17} {1,15}' -f 'Tokens:', $session.Tokens.ToString('N0'))
-            Write-Output ('{0,-17} {1,15}' -f '  InputTokens:', $session.InputTokens.ToString('N0'))
-            Write-Output ('{0,-17} {1,15}' -f '  OutputTokens:', $session.OutputTokens.ToString('N0'))
-            Write-Output ('{0,-17} {1,15}' -f '  CacheReadTokens:', $session.CacheReadTokens.ToString('N0'))
-            Write-Output ('{0,-17} {1,15}' -f '  CacheWriteTokens:', $session.CacheWriteTokens.ToString('N0'))
-            Write-Output ('{0,-17} {1,15}' -f '  ReasoningTokens:', $session.ReasoningTokens.ToString('N0'))
+            Write-Output ('{0,-22} {1,15}' -f 'Tokens:', $session.Tokens.ToString('N0'))
+            Write-Output ('{0,-22} {1,15}' -f '  ├─ InputTokens:', $session.InputTokens.ToString('N0'))
+            Write-Output ('{0,-22} {1,15}' -f '  ├─ OutputTokens:', $session.OutputTokens.ToString('N0'))
+            Write-Output ('{0,-22} {1,15}' -f '  ├─ CacheReadTokens:', $session.CacheReadTokens.ToString('N0'))
+            Write-Output ('{0,-22} {1,15}' -f '  ├─ CacheWriteTokens:', $session.CacheWriteTokens.ToString('N0'))
+            Write-Output ('{0,-22} {1,15}' -f '  └─ ReasoningTokens:', $session.ReasoningTokens.ToString('N0'))
             Write-Output ('{0,-17} {1}' -f 'ResumeCommand:', $session.ResumeCommand)
         } elseif ($Source -eq 'claude') {
             Write-Output ('{0,-17} {1}' -f 'SessionId:', $session.SessionId)
@@ -2376,12 +2429,12 @@ if ($ShowCommands) {
             Write-Output ('{0,-17} {1}' -f 'WorkspacePath:', $session.WorkspacePath)
             Write-Output ('{0,-17} {1}' -f 'RoutingName:', $session.RoutingName)
             Write-Output ('{0,-17} {1}' -f 'Model:', (ConvertTo-DisplayModel $session.Model))
-            Write-Output ('{0,-17} {1,15}' -f 'Tokens:', $session.Tokens.ToString('N0'))
-            Write-Output ('{0,-17} {1,15}' -f '  InputTokens:', $session.InputTokens.ToString('N0'))
-            Write-Output ('{0,-17} {1,15}' -f '  OutputTokens:', $session.OutputTokens.ToString('N0'))
-            Write-Output ('{0,-17} {1,15}' -f '  CacheReadTokens:', $session.CacheReadTokens.ToString('N0'))
-            Write-Output ('{0,-17} {1,15}' -f '  CacheWriteTokens:', $session.CacheWriteTokens.ToString('N0'))
-            Write-Output ('{0,-17} {1,15}' -f '  ReasoningTokens:', $session.ReasoningTokens.ToString('N0'))
+            Write-Output ('{0,-22} {1,15}' -f 'Tokens:', $session.Tokens.ToString('N0'))
+            Write-Output ('{0,-22} {1,15}' -f '  ├─ InputTokens:', $session.InputTokens.ToString('N0'))
+            Write-Output ('{0,-22} {1,15}' -f '  ├─ OutputTokens:', $session.OutputTokens.ToString('N0'))
+            Write-Output ('{0,-22} {1,15}' -f '  ├─ CacheReadTokens:', $session.CacheReadTokens.ToString('N0'))
+            Write-Output ('{0,-22} {1,15}' -f '  ├─ CacheWriteTokens:', $session.CacheWriteTokens.ToString('N0'))
+            Write-Output ('{0,-22} {1,15}' -f '  └─ ReasoningTokens:', $session.ReasoningTokens.ToString('N0'))
             Write-Output ('{0,-17} {1}' -f 'GitBranch:', $session.GitBranch)
             Write-Output ('{0,-17} {1}' -f 'Mode:', $session.Mode)
             Write-Output ('{0,-17} {1}' -f 'MessageCount:', $session.MessageCount)
@@ -2394,15 +2447,16 @@ if ($ShowCommands) {
             Write-Output ('{0,-17} {1}' -f 'Title:', $session.Title)
             Write-Output ('{0,-17} {1}' -f 'WorkspacePath:', $session.WorkspacePath)
             Write-Output ('{0,-17} {1}' -f 'Model:', (ConvertTo-DisplayModel $session.Model))
-            Write-Output ('{0,-17} {1,15}' -f 'Tokens:', $session.Tokens.ToString('N0'))
-            Write-Output ('{0,-17} {1,15}' -f '  InputTokens:', $session.InputTokens.ToString('N0'))
-            Write-Output ('{0,-17} {1,15}' -f '  OutputTokens:', $session.OutputTokens.ToString('N0'))
-            Write-Output ('{0,-17} {1,15}' -f '  CacheReadTokens:', $session.CacheReadTokens.ToString('N0'))
-            Write-Output ('{0,-17} {1,15}' -f '  CacheWriteTokens:', $session.CacheWriteTokens.ToString('N0'))
-            Write-Output ('{0,-17} {1,15}' -f '  ReasoningTokens:', $session.ReasoningTokens.ToString('N0'))
-            Write-Output ('{0,-17} {1,15}' -f 'Credits:', $(if ($null -ne $session.Credits) { $session.Credits.ToString('N2') } else { '-' }))
-            Write-Output ('{0,-17} {1,15}' -f 'Requests:', $session.Requests.ToString('N0'))
-            Write-Output ('{0,-17} {1,15}' -f 'Turns:', $session.Turns.ToString('N0'))
+            Write-Output ('{0,-22} {1,15}' -f 'Tokens:', $session.Tokens.ToString('N0'))
+            Write-Output ('{0,-22} {1,15}' -f '  ├─ InputTokens:', $session.InputTokens.ToString('N0'))
+            Write-Output ('{0,-22} {1,15}' -f '  ├─ OutputTokens:', $session.OutputTokens.ToString('N0'))
+            Write-Output ('{0,-22} {1,15}' -f '  ├─ CacheReadTokens:', $session.CacheReadTokens.ToString('N0'))
+            Write-Output ('{0,-22} {1,15}' -f '  ├─ CacheWriteTokens:', $session.CacheWriteTokens.ToString('N0'))
+            Write-Output ('{0,-22} {1,15}' -f '  └─ ReasoningTokens:', $session.ReasoningTokens.ToString('N0'))
+            Write-Output ('{0,-22} {1,15}' -f 'Credits:', $(if ($null -ne $session.Credits) { $session.Credits.ToString('N2') } else { '-' }))
+            Write-Output ('{0,-22} {1,15}' -f 'ActualCredits:', $(if ($null -ne $session.ActualCredits) { $session.ActualCredits.ToString('N2') } else { '-' }))
+            Write-Output ('{0,-22} {1,15}' -f 'Requests:', $session.Requests.ToString('N0'))
+            Write-Output ('{0,-22} {1,15}' -f 'Turns:', $session.Turns.ToString('N0'))
             Write-Output ('{0,-17} {1}' -f 'Mode:', $session.Mode)
             Write-Output ('{0,-17} {1}' -f 'SourceMode:', $session.SourceMode)
             Write-Output ('{0,-17} {1}' -f 'PermissionMode:', $session.PermissionMode)
@@ -2426,7 +2480,12 @@ if ($Source -eq 'codex') {
     # Tokens 列宽按当前页内容自适应：表头名与本页最长数值的较大者。
     $tokensWidth = 'Tokens'.Length
     foreach ($s in $sessions) { $tokensWidth = [Math]::Max($tokensWidth, $s.Tokens.ToString('N0').Length) }
-    $widths = @{ Lane = 5; SessionId = 10; LastActivity = 19; Model = 24; Tokens = $tokensWidth }
+    # SessionId 列宽：默认缩略占 10 位；-FullSessionId 时按本页最长完整编号自适应。
+    $sidWidthList = 10
+    if ($FullSessionId) {
+        foreach ($s in $sessions) { $sidWidthList = [Math]::Max($sidWidthList, ([string]$s.SessionId).Length) }
+    }
+    $widths = @{ Lane = 5; SessionId = $sidWidthList; LastActivity = 19; Model = 24; Tokens = $tokensWidth }
     $numColumns = 7
     $fixedWidth = $widths.Lane + $widths.SessionId + $widths.LastActivity + $widths.Model + $widths.Tokens + ($numColumns - 1)
     $remainingWidth = [Math]::Max($consoleWidth - $fixedWidth, 56)
@@ -2451,7 +2510,7 @@ if ($Source -eq 'codex') {
     foreach ($session in $sessions) {
         $line = '{0} {1} {2} {3} {4} {5} {6}' -f `
             (Format-SessionCell -Text $session.Lane -Width $widths.Lane), `
-            (Format-SessionCell -Text (Format-ListSessionId -SessionId $session.SessionId) -Width $widths.SessionId), `
+            (Format-SessionCell -Text (Format-ListSessionId -SessionId $session.SessionId -Full:$FullSessionId) -Width $widths.SessionId), `
             (Format-SessionCell -Text ($session.LastActivity.ToString('yyyy-MM-dd HH:mm:ss')) -Width $widths.LastActivity), `
             (Format-SessionCell -Text $session.Title -Width $widths.Title), `
             (Format-SessionCell -Text (ConvertTo-DisplayModel $session.Model) -Width $widths.Model), `
@@ -2463,7 +2522,12 @@ if ($Source -eq 'codex') {
     # Tokens 列宽按当前页内容自适应：表头名与本页最长数值的较大者。
     $tokensWidth = 'Tokens'.Length
     foreach ($s in $sessions) { $tokensWidth = [Math]::Max($tokensWidth, $s.Tokens.ToString('N0').Length) }
-    $widths = @{ SessionId = 10; LastActivity = 16; Model = 24; Tokens = $tokensWidth }
+    # SessionId 列宽：默认缩略占 10 位；-FullSessionId 时按本页最长完整编号自适应。
+    $sidWidthList = 10
+    if ($FullSessionId) {
+        foreach ($s in $sessions) { $sidWidthList = [Math]::Max($sidWidthList, ([string]$s.SessionId).Length) }
+    }
+    $widths = @{ SessionId = $sidWidthList; LastActivity = 16; Model = 24; Tokens = $tokensWidth }
     $numColumns = 6
     $fixedWidth = $widths.SessionId + $widths.LastActivity + $widths.Model + $widths.Tokens + ($numColumns - 1)
     $remainingWidth = [Math]::Max($consoleWidth - $fixedWidth, 56)
@@ -2486,7 +2550,7 @@ if ($Source -eq 'codex') {
     Write-Output $separator
     foreach ($session in $sessions) {
         $line = '{0} {1} {2} {3} {4} {5}' -f `
-            (Format-SessionCell -Text (Format-ListSessionId -SessionId $session.SessionId) -Width $widths.SessionId), `
+            (Format-SessionCell -Text (Format-ListSessionId -SessionId $session.SessionId -Full:$FullSessionId) -Width $widths.SessionId), `
             (Format-SessionCell -Text ($session.LastActivity.ToString('yyyy-MM-dd HH:mm')) -Width $widths.LastActivity), `
             (Format-SessionCell -Text $session.Title -Width $widths.Title), `
             (Format-SessionCell -Text (ConvertTo-DisplayModel $session.Model) -Width $widths.Model), `
@@ -2496,25 +2560,32 @@ if ($Source -eq 'codex') {
     }
 } else {
     # WorkBuddy 列表可选列：Status 默认显示（-HideStatus 关闭），Tokens / Credits 默认隐藏（-Tokens / -Credits 打开）。
+    # -ActualCredits 会把 Credits 列切换为实际积分口径并自动展开该列（列头随之改为 ActualCredits）。
     # 列顺序固定：Type / SessionId / LastActivity / Title / Model / [Status] / [Tokens] / [Credits] / WorkspacePath。
     $showStatus  = -not $HideStatus.IsPresent
     $showTokens  = $Tokens.IsPresent
-    $showCredits = $Credits.IsPresent
+    $showCredits = $Credits.IsPresent -or $ActualCredits.IsPresent
     $showTurns   = $Turns.IsPresent
     $showRequests = $Requests.IsPresent
+    $creditsHeader = if ($ActualCredits.IsPresent) { 'ActualCredits' } else { 'Credits' }
 
     # 数字可选列宽按当前页内容自适应：列宽 = 表头名与本页最长数值的较大者，
     # 避免固定 14 字符宽在短数值页面上留白浪费（自适应省出的宽度还给 WorkspacePath）。
-    $widths = @{ Type = 5; SessionId = 10; LastActivity = 19; Model = 20; Status = 10 }
+    $sidWidthList = 10
+    if ($FullSessionId) {
+        foreach ($s in $sessions) { $sidWidthList = [Math]::Max($sidWidthList, ([string]$s.SessionId).Length) }
+    }
+    $widths = @{ Type = 5; SessionId = $sidWidthList; LastActivity = 19; Model = 20; Status = 10 }
     if ($showTokens) {
         $w = 'Tokens'.Length
         foreach ($s in $sessions) { $w = [Math]::Max($w, $s.Tokens.ToString('N0').Length) }
         $widths.Tokens = $w
     }
     if ($showCredits) {
-        $w = 'Credits'.Length
+        $w = $creditsHeader.Length
         foreach ($s in $sessions) {
-            $ct = if ($null -ne $s.Credits) { $s.Credits.ToString('N2') } else { '-' }
+            $cv = if ($ActualCredits.IsPresent) { $s.ActualCredits } else { $s.Credits }
+            $ct = if ($null -ne $cv) { $cv.ToString('N2') } else { '-' }
             $w = [Math]::Max($w, $ct.Length)
         }
         $widths.Credits = $w
@@ -2562,7 +2633,7 @@ if ($Source -eq 'codex') {
         $ruleCells += ('-' * $widths.Tokens)
     }
     if ($showCredits) {
-        $headerCells += (Format-SessionCell -Text 'Credits' -Width $widths.Credits -Align right)
+        $headerCells += (Format-SessionCell -Text $creditsHeader -Width $widths.Credits -Align right)
         $ruleCells += ('-' * $widths.Credits)
     }
     if ($showTurns) {
@@ -2581,12 +2652,13 @@ if ($Source -eq 'codex') {
     Write-Output $header
     Write-Output $separator
     foreach ($session in $sessions) {
-        # 无状态值（合成 agent-* 会话）显示 -，与 Credits 无数据的口径一致。
+        # 无状态值（合成 agent-* 会话）显示 -，与显示积分无记录的口径一致。
         $statusText = if ([string]::IsNullOrWhiteSpace($session.Status)) { '-' } else { $session.Status }
-        $creditsText = if ($null -ne $session.Credits) { $session.Credits.ToString('N2') } else { '-' }
+        $creditsVal = if ($ActualCredits.IsPresent) { $session.ActualCredits } else { $session.Credits }
+        $creditsText = if ($null -ne $creditsVal) { $creditsVal.ToString('N2') } else { '-' }
         $cells = @(
             (Format-SessionCell -Text $session.Type -Width $widths.Type),
-            (Format-SessionCell -Text (Format-ListSessionId -SessionId $session.SessionId) -Width $widths.SessionId),
+            (Format-SessionCell -Text (Format-ListSessionId -SessionId $session.SessionId -Full:$FullSessionId) -Width $widths.SessionId),
             (Format-SessionCell -Text ($session.LastActivity.ToString('yyyy-MM-dd HH:mm:ss')) -Width $widths.LastActivity),
             (Format-SessionCell -Text $session.Title -Width $widths.Title),
             (Format-SessionCell -Text (ConvertTo-DisplayModel $session.Model) -Width $widths.Model)

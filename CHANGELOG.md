@@ -2,6 +2,25 @@
 
 格式遵循 [Keep a Changelog 2.0.0](https://keepachangelog.com/en/2.0.0/)，版本号遵循 [Semantic Versioning 2.0.0](https://semver.org/spec/v2.0.0.html)。
 
+## [1.6.0] - 2026-10-29
+
+### Added（新增）
+
+- 新增 WorkBuddy 实际积分口径：
+  - 列表新增 `-ActualCredits` 开关：带上后积分列切换为实际积分（列头 `ActualCredits`），子智能体行显示实际数值，不再为 `-`；
+  - `-s` / `-c` 详情视图并列显示 `Credits`（显示积分）与 `ActualCredits`（实际积分）两行；
+  - `-AsJson` 输出新增 `ActualCredits` 字段，原 `Credits` 字段含义不变。
+- 新增 `-FullSessionId` 开关：列表显示完整会话编号，codex / claude / workbuddy 三数据源生效；不带时保持缩略显示。
+
+### Changed（变更）
+
+- 详情视图（`-s` / `-c`）的 token 子字段由纯缩进改为树形连接线前缀（`├─` / `└─`），末项为 `└─`。
+- WorkBuddy 积分说明统一为「显示积分 / 实际积分」两个概念：显示积分为 WorkBuddy 界面口径，会话派发的子智能体消耗合并计入该会话名下；实际积分为该会话自身每次请求扣费逐条相加的总数，子智能体单独成行、各算各的。
+
+### Fixed（修复）
+
+- 修复详情视图 `CacheWriteTokens` 行数值右移两列、个位与其他行不对齐的问题。
+
 ## [1.5.1] - 2026-10-26
 
 ### Added（新增）
