@@ -2,6 +2,14 @@
 
 格式遵循 [Keep a Changelog 2.0.0](https://keepachangelog.com/en/2.0.0/)，版本号遵循 [Semantic Versioning 2.0.0](https://semver.org/spec/v2.0.0.html)。
 
+## [1.6.1] - 2026-11-02
+
+### Fixed（修复）
+
+- 修复子智能体 Model 列缺少 BYOK 标识的问题。
+  - 修复前：同一模型下，主会话显示 BYOK:<模型名>，子智能体仅显示 <模型名>。
+  - 修复后：子智能体与主会话显示一致，均显示 BYOK:<模型名>。
+
 ## [1.6.0] - 2026-10-29
 
 ### Added（新增）

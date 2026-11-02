@@ -115,7 +115,7 @@ param(
 Set-StrictMode -Version Latest
 
 # 版本号单一真源：发版时仅改此处；帮助文本与 -v/-Version 输出均引用本变量
-$ScriptVersion = 'v1.6.0'
+$ScriptVersion = 'v1.6.1'
 
 if ($PSVersionTable.PSEdition -eq 'Desktop') {
     Write-Warning '建议使用 PowerShell 7 (pwsh) 运行本工具；当前为 Windows PowerShell 5.1，中文可能乱码。'
@@ -1681,13 +1681,17 @@ for sid, jp in session_file_map.items():
                 except Exception:
                     continue
                 if isinstance(_o, dict):
-                    # 模型回退链：providerData.model（官方记录的实际生效模型；
-                    # 子智能体 transcript 只在此处写模型）→ requestModelId →
-                    # requestModelName → 顶层 model → message.model（旧口径兜底）
+                    # 模型回退链：providerData.requestModelId（请求的模型路由，与 DB
+                    # sessions.model 同口径，BYOK 会话带 custom-local: 前缀）→
+                    # providerData.model（实际生效模型裸名，无前缀）→
+                    # requestModelName → 顶层 model → message.model（旧口径兜底）。
+                    # requestModelId 优先的原因：主会话 Model 取自 DB（路由口径），
+                    # 子智能体若优先取裸名会丢失 custom-local: 前缀，BYOK: 显示标识
+                    # 随之丢失，与主会话口径不一致。
                     _pd = _o.get('providerData') if isinstance(_o.get('providerData'), dict) else None
                     _m = None
                     if _pd:
-                        _m = _pd.get('model') or _pd.get('requestModelId') or _pd.get('requestModelName')
+                        _m = _pd.get('requestModelId') or _pd.get('model') or _pd.get('requestModelName')
                     if not _m:
                         _m = _o.get('model')
                     if not _m and isinstance(_o.get('message'), dict):
