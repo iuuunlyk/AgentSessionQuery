@@ -12,7 +12,12 @@ AgentsSessionQuery 统一命令（规划 1 单命令重构）
     子智能体行无此记录、显示 '-'）；ActualCredits 为「实际积分」（对该会话自身每次请求
     所扣积分逐条相加所得的总数，来源为会话日志文件逐请求扣费记录；子智能体各自独立成行、
     仅统计自身消耗；本地日志对部分请求记 0 而平台实际扣费，故本口径为下限值）。
-    列表 / 详情 / -AsJson 三视图一致；列表加 -ActualCredits 可将 Credits 列切换为实际积分。
+    列表 / 详情两视图一致；列表 -Credits 显示显示积分列、-ActualCredits 显示实际积分列，
+    两个都带则并排两列（显示积分在前）。
+  - 显示积分缺值分三种情形，不可一律显示 '-'：① 子智能体行（界面把该行消耗并入父会话，
+    本行在该口径下无数据）→ '-'；② 有会话日志但平台未记录积分（全部请求走免积分模型时
+    常见）→ 0.00；③ 无会话日志（无法判定）→ '-'。实际积分只有「无会话日志」一种缺值 → '-'。
+    -AsJson 输出原始记录（无记录为 null），不套用上述显示规则。
   - WorkBuddy 标题五级回退：custom_title（DB，人工重命名）→ transcript 内 type=ai-title 的
     aiTitle（取末条，跟进 AI 后续更新）→ sessions.title（防回归兜底）→ 首条真实用户消息
     （必须先剥离 <system-reminder> 等成块内部标签，再截 42 字）→ '(无标题会话)'。
@@ -26,6 +31,10 @@ AgentsSessionQuery 统一命令（规划 1 单命令重构）
 详细记录: CHANGELOG.md
 #>
 
+# 主体函数：全部查询逻辑。参数声明放在这里（不再置于文件顶部），由文件末尾的入口层
+# 先做中文校验，再把参数原样交给本函数。原因：文件顶部写 param 块时，「参数写错」
+# 的英文报错由 PowerShell 引擎在脚本体执行之前抛出，脚本体无法拦截也无法改写。
+function Invoke-AsqMain {
 [CmdletBinding(PositionalBinding = $true)]
 param(
     # 查询来源：既可用 -Source codex 命名传入，也可作为第一个位置参数直接写 codex（即 asq codex -g）
@@ -75,14 +84,16 @@ param(
 
     [switch]$Tokens,
 
-    # Credits 列默认按「显示积分」口径：WorkBuddy 界面所采用的统计口径，
+    # Credits 列按「显示积分」口径：WorkBuddy 界面所采用的统计口径，
     # 该会话派发的子智能体所消耗的积分合并计入该会话名下（故子智能体行无此数据、显示 -）。
+    # 与 -ActualCredits 各管一列，两者可同时传入（列表并排显示，显示积分在前）。
     [switch]$Credits,
 
-    # -ActualCredits：Credits 列改按「实际积分」口径显示并自动展开该列（无需再带 -Credits）。
+    # -ActualCredits：显示「实际积分」列。
     # 实际积分 = 对该会话自身每次请求所扣积分逐条相加所得的总数（来源：会话日志文件
     # ~/.workbuddy/projects/ 下 jsonl 的逐请求扣费记录）；子智能体各自独立成行、仅统计自身消耗，
     # 故子智能体行在本口径下有数值。本地日志对部分请求记 0 而平台实际扣费，本口径为下限值。
+    # 单独传入时只显示这一列（与 -Credits 不互斥、也不互相替代）。
     [switch]$ActualCredits,
 
     [switch]$Turns,
@@ -115,7 +126,7 @@ param(
 Set-StrictMode -Version Latest
 
 # 版本号单一真源：发版时仅改此处；帮助文本与 -v/-Version 输出均引用本变量
-$ScriptVersion = 'v1.6.1'
+$ScriptVersion = 'v1.7.0'
 
 if ($PSVersionTable.PSEdition -eq 'Desktop') {
     Write-Warning '建议使用 PowerShell 7 (pwsh) 运行本工具；当前为 Windows PowerShell 5.1，中文可能乱码。'
@@ -848,7 +859,7 @@ function Get-CodexSessions {
 # ============================================================================
 # Claude 采集（移植自 claude-sessions.ps1 v1.2.9）
 # ============================================================================
-$ClaudeModelAliases = @{
+$script:ClaudeModelAliases = @{
     'big-pickle'                        = 'glm-4.7'
     'big pickle'                        = 'glm-4.7'
     'bigpickle'                         = 'glm-4.7'
@@ -1853,6 +1864,10 @@ function Get-WorkBuddySessions {
             Turns           = if ($null -ne $s.turns) { [long]$s.turns } else { 0 }
             Credits         = if ($null -ne $s.credits) { [double]$s.credits } else { $null }
             ActualCredits   = if ($null -ne $s.actual_credits) { [double]$s.actual_credits } else { $null }
+            # 合成会话 = 无 DB 行、由子智能体 jsonl 构造出来的行。显示积分口径下本行本就
+            # 无数据（界面把其消耗并入父会话），故渲染层须让这类行保持 '-'，
+            # 不能套用「有日志 → 0.00」的规则。
+            IsSynthetic     = [bool]($s.PSObject.Properties['synthetic'] -and $s.synthetic -eq 1)
             TokenSource     = if ($s.token_source) { $s.token_source } else { 'transcript' }
             LastActivity    = $lastActivity
             Mode            = $s.mode
@@ -1870,6 +1885,32 @@ function Get-WorkBuddySessions {
 }
 
 # ============================================================================
+# 积分显示值（列表与详情共用，保证两处口径不会各写一套）
+#   显示积分无记录时分三种情形，不可一律显示 '-'：
+#     ① 子智能体行（IsSynthetic）：界面把该行消耗并入父会话，本行在该口径下无数据 → '-'
+#     ② 有会话日志（ActualCredits 非 null）但平台未记录积分 → 0.00
+#        常见于全部请求走免积分模型（如 k3-256k / hy3 / hy4-preview）的会话
+#     ③ 无会话日志（ActualCredits 为 null）→ '-'，表示无法判定
+#   实际积分只区分「有值」与「无日志」两种情形。
+#   数据层（-AsJson）保持原始 null，不在此层改动，避免抹掉「0」与「无记录」的差别。
+# ============================================================================
+function Format-CreditsDisplay {
+    param(
+        [Parameter(Mandatory = $true)]$Session,
+        [switch]$Actual
+    )
+    if ($Actual) {
+        if ($null -ne $Session.ActualCredits) { return $Session.ActualCredits.ToString('N2') }
+        return '-'
+    }
+    if ($null -ne $Session.Credits) { return $Session.Credits.ToString('N2') }
+    $isSynthetic = $false
+    if ($Session.PSObject.Properties['IsSynthetic']) { $isSynthetic = [bool]$Session.IsSynthetic }
+    if (-not $isSynthetic -and $null -ne $Session.ActualCredits) { return ([double]0).ToString('N2') }
+    return '-'
+}
+
+# ============================================================================
 # 统一帮助
 # ============================================================================
 function Show-AgentsSessionQueryHelp {
@@ -1884,6 +1925,12 @@ asq - 本机 Codex / Claude / WorkBuddy 历史会话统一查询命令
     claude     查询 Claude Code 历史会话
     workbuddy  查询 WorkBuddy 历史会话（需 Python 桥接）
   最小可用写法：asq codex / asq claude / asq workbuddy，其余均为可选。
+
+参数写错时:
+  提示为中文，并给出最接近的正确写法。参数名不分大小写、允许前缀缩写（与 PowerShell 一致）。
+    asq workbuddy -n               -> -n 后面需要一个值，例如 -n 20
+    asq workbuddy -Credits -credit -> 两者是同一个参数，只写一次即可
+    asq workbuddy -tokn            -> 没有这个参数，最接近的是 -Tokens
 
 常用示例:
   asq workbuddy                      # 最近 20 条 WorkBuddy 会话（默认按当前路径过滤）
@@ -1927,9 +1974,10 @@ asq - 本机 Codex / Claude / WorkBuddy 历史会话统一查询命令
   -HideStatus                        隐藏 WorkBuddy 列表的 Status 列（该列默认显示）
   -Tokens                            显示 WorkBuddy 列表的 Tokens 列（该列默认隐藏）
   -Credits                           显示 WorkBuddy 列表的 Credits 列（显示积分，该列默认隐藏）。
-                                     显示积分 = WorkBuddy 界面所采用的统计口径：该会话派发的
-                                     子智能体所消耗的积分合并计入该会话名下，子智能体行显示 -
-  -ActualCredits                     Credits 列改按实际积分显示并自动展开该列（仅 workbuddy 列表）。
+                                    显示积分 = WorkBuddy 界面所采用的统计口径：该会话派发的
+                                    子智能体所消耗的积分合并计入该会话名下，子智能体行显示 -
+  -ActualCredits                     显示 WorkBuddy 列表的 ActualCredits 列（实际积分）。与 -Credits
+                                    各管一列，两个都带则并排显示（显示积分在前）。
                                      实际积分 = 对该会话自身每次请求所扣积分逐条相加所得的总数；
                                      子智能体各自独立成行、仅统计自身消耗；本口径为下限值
   -Turns                             显示 WorkBuddy 列表的 Turns 列（轮次，该列默认隐藏）
@@ -2004,7 +2052,7 @@ if ([string]::IsNullOrWhiteSpace($Source) -or ($allowedSources -notcontains $Sou
 
 # 参数用法容错：显示条数（Limit）只接受整数。若收到非数字，统一给出人话报错，列出本次实际用到的开关（含 -Source）。
 if ($Limit -is [string] -and -not [string]::IsNullOrWhiteSpace($Limit) -and $Limit -notmatch '^\d+$') {
-    $switchShortNames = @{
+    $switchShortNames = [ordered]@{
         Source               = '-Source'
         Global              = '-g'
         ShowCommands        = '-c'
@@ -2022,8 +2070,9 @@ if ($Limit -is [string] -and -not [string]::IsNullOrWhiteSpace($Limit) -and $Lim
         Turns               = '-Turns'
         Requests            = '-Requests'
     }
-    $usedSwitches = @(foreach ($key in $PSBoundParameters.Keys) {
-        if ($switchShortNames.ContainsKey($key)) { $switchShortNames[$key] }
+    # 固定按声明顺序列出，避免输出顺序随参数书写顺序变化
+    $usedSwitches = @(foreach ($key in $switchShortNames.Keys) {
+        if ($PSBoundParameters.ContainsKey($key)) { $switchShortNames[$key] }
     })
     if ($usedSwitches.Count -eq 0) {
         $usedSwitches = @('-n')
@@ -2198,8 +2247,8 @@ if ($hasSessionId -and ($Source -eq 'claude' -or $Source -eq 'workbuddy')) {
             Write-Output ('{0,-22} {1,15}' -f '  ├─ CacheReadTokens:', $session.CacheReadTokens.ToString('N0'))
             Write-Output ('{0,-22} {1,15}' -f '  ├─ CacheWriteTokens:', $session.CacheWriteTokens.ToString('N0'))
             Write-Output ('{0,-22} {1,15}' -f '  └─ ReasoningTokens:', $session.ReasoningTokens.ToString('N0'))
-            Write-Output ('{0,-22} {1,15}' -f 'Credits:', $(if ($null -ne $session.Credits) { $session.Credits.ToString('N2') } else { '-' }))
-            Write-Output ('{0,-22} {1,15}' -f 'ActualCredits:', $(if ($null -ne $session.ActualCredits) { $session.ActualCredits.ToString('N2') } else { '-' }))
+            Write-Output ('{0,-22} {1,15}' -f 'Credits:', (Format-CreditsDisplay -Session $session))
+            Write-Output ('{0,-22} {1,15}' -f 'ActualCredits:', (Format-CreditsDisplay -Session $session -Actual))
             Write-Output ('{0,-22} {1,15}' -f 'Requests:', $session.Requests.ToString('N0'))
             Write-Output ('{0,-22} {1,15}' -f 'Turns:', $session.Turns.ToString('N0'))
             Write-Output ('{0,-17} {1}' -f 'Mode:', $session.Mode)
@@ -2457,8 +2506,8 @@ if ($ShowCommands) {
             Write-Output ('{0,-22} {1,15}' -f '  ├─ CacheReadTokens:', $session.CacheReadTokens.ToString('N0'))
             Write-Output ('{0,-22} {1,15}' -f '  ├─ CacheWriteTokens:', $session.CacheWriteTokens.ToString('N0'))
             Write-Output ('{0,-22} {1,15}' -f '  └─ ReasoningTokens:', $session.ReasoningTokens.ToString('N0'))
-            Write-Output ('{0,-22} {1,15}' -f 'Credits:', $(if ($null -ne $session.Credits) { $session.Credits.ToString('N2') } else { '-' }))
-            Write-Output ('{0,-22} {1,15}' -f 'ActualCredits:', $(if ($null -ne $session.ActualCredits) { $session.ActualCredits.ToString('N2') } else { '-' }))
+            Write-Output ('{0,-22} {1,15}' -f 'Credits:', (Format-CreditsDisplay -Session $session))
+            Write-Output ('{0,-22} {1,15}' -f 'ActualCredits:', (Format-CreditsDisplay -Session $session -Actual))
             Write-Output ('{0,-22} {1,15}' -f 'Requests:', $session.Requests.ToString('N0'))
             Write-Output ('{0,-22} {1,15}' -f 'Turns:', $session.Turns.ToString('N0'))
             Write-Output ('{0,-17} {1}' -f 'Mode:', $session.Mode)
@@ -2563,15 +2612,17 @@ if ($Source -eq 'codex') {
         Write-Output $line
     }
 } else {
-    # WorkBuddy 列表可选列：Status 默认显示（-HideStatus 关闭），Tokens / Credits 默认隐藏（-Tokens / -Credits 打开）。
-    # -ActualCredits 会把 Credits 列切换为实际积分口径并自动展开该列（列头随之改为 ActualCredits）。
-    # 列顺序固定：Type / SessionId / LastActivity / Title / Model / [Status] / [Tokens] / [Credits] / WorkspacePath。
+    # WorkBuddy 列表可选列：Status 默认显示（-HideStatus 关闭）；Tokens / Credits / ActualCredits /
+    # Turns / Requests 默认隐藏，各由同名开关打开。Credits 与 ActualCredits 各管一列、互不替代：
+    # 只带一个时只出那一列，两个都带则并排两列（显示积分在前）。
+    # 列顺序固定：Type / SessionId / LastActivity / Title / Model / [Status] / [Tokens] / [Credits] /
+    #             [ActualCredits] / [Turns] / [Requests] / WorkspacePath。
     $showStatus  = -not $HideStatus.IsPresent
     $showTokens  = $Tokens.IsPresent
-    $showCredits = $Credits.IsPresent -or $ActualCredits.IsPresent
+    $showCredits = $Credits.IsPresent
+    $showActualCredits = $ActualCredits.IsPresent
     $showTurns   = $Turns.IsPresent
     $showRequests = $Requests.IsPresent
-    $creditsHeader = if ($ActualCredits.IsPresent) { 'ActualCredits' } else { 'Credits' }
 
     # 数字可选列宽按当前页内容自适应：列宽 = 表头名与本页最长数值的较大者，
     # 避免固定 14 字符宽在短数值页面上留白浪费（自适应省出的宽度还给 WorkspacePath）。
@@ -2586,13 +2637,18 @@ if ($Source -eq 'codex') {
         $widths.Tokens = $w
     }
     if ($showCredits) {
-        $w = $creditsHeader.Length
+        $w = 'Credits'.Length
         foreach ($s in $sessions) {
-            $cv = if ($ActualCredits.IsPresent) { $s.ActualCredits } else { $s.Credits }
-            $ct = if ($null -ne $cv) { $cv.ToString('N2') } else { '-' }
-            $w = [Math]::Max($w, $ct.Length)
+            $w = [Math]::Max($w, (Format-CreditsDisplay -Session $s).Length)
         }
         $widths.Credits = $w
+    }
+    if ($showActualCredits) {
+        $w = 'ActualCredits'.Length
+        foreach ($s in $sessions) {
+            $w = [Math]::Max($w, (Format-CreditsDisplay -Session $s -Actual).Length)
+        }
+        $widths.ActualCredits = $w
     }
     if ($showTurns) {
         $w = 'Turns'.Length
@@ -2609,6 +2665,7 @@ if ($Source -eq 'codex') {
     if ($showStatus)  { $optionalWidth += $widths.Status;  $optionalCount++ }
     if ($showTokens)  { $optionalWidth += $widths.Tokens;  $optionalCount++ }
     if ($showCredits) { $optionalWidth += $widths.Credits; $optionalCount++ }
+    if ($showActualCredits) { $optionalWidth += $widths.ActualCredits; $optionalCount++ }
     if ($showTurns)   { $optionalWidth += $widths.Turns;   $optionalCount++ }
     if ($showRequests){ $optionalWidth += $widths.Requests;$optionalCount++ }
     $numColumns = 6 + $optionalCount
@@ -2637,8 +2694,12 @@ if ($Source -eq 'codex') {
         $ruleCells += ('-' * $widths.Tokens)
     }
     if ($showCredits) {
-        $headerCells += (Format-SessionCell -Text $creditsHeader -Width $widths.Credits -Align right)
+        $headerCells += (Format-SessionCell -Text 'Credits' -Width $widths.Credits -Align right)
         $ruleCells += ('-' * $widths.Credits)
+    }
+    if ($showActualCredits) {
+        $headerCells += (Format-SessionCell -Text 'ActualCredits' -Width $widths.ActualCredits -Align right)
+        $ruleCells += ('-' * $widths.ActualCredits)
     }
     if ($showTurns) {
         $headerCells += (Format-SessionCell -Text 'Turns' -Width $widths.Turns -Align right)
@@ -2658,8 +2719,6 @@ if ($Source -eq 'codex') {
     foreach ($session in $sessions) {
         # 无状态值（合成 agent-* 会话）显示 -，与显示积分无记录的口径一致。
         $statusText = if ([string]::IsNullOrWhiteSpace($session.Status)) { '-' } else { $session.Status }
-        $creditsVal = if ($ActualCredits.IsPresent) { $session.ActualCredits } else { $session.Credits }
-        $creditsText = if ($null -ne $creditsVal) { $creditsVal.ToString('N2') } else { '-' }
         $cells = @(
             (Format-SessionCell -Text $session.Type -Width $widths.Type),
             (Format-SessionCell -Text (Format-ListSessionId -SessionId $session.SessionId -Full:$FullSessionId) -Width $widths.SessionId),
@@ -2669,10 +2728,239 @@ if ($Source -eq 'codex') {
         )
         if ($showStatus)  { $cells += (Format-SessionCell -Text $statusText -Width $widths.Status) }
         if ($showTokens)  { $cells += (Format-SessionCell -Text ($session.Tokens.ToString('N0')) -Width $widths.Tokens -Align right) }
-        if ($showCredits) { $cells += (Format-SessionCell -Text $creditsText -Width $widths.Credits -Align right) }
+        if ($showCredits) { $cells += (Format-SessionCell -Text (Format-CreditsDisplay -Session $session) -Width $widths.Credits -Align right) }
+        if ($showActualCredits) { $cells += (Format-SessionCell -Text (Format-CreditsDisplay -Session $session -Actual) -Width $widths.ActualCredits -Align right) }
         if ($showTurns)   { $cells += (Format-SessionCell -Text ($session.Turns.ToString('N0')) -Width $widths.Turns -Align right) }
         if ($showRequests){ $cells += (Format-SessionCell -Text ($session.Requests.ToString('N0')) -Width $widths.Requests -Align right) }
         $cells += (Format-SessionCell -Text $session.WorkspacePath -Width $widths.WorkspacePath -Mode 'middle')
         Write-Output ($cells -join ' ')
     }
 }
+}
+
+# ============================================================================
+# 入口层：参数友好校验
+#   本层不声明任何参数，只接收原始参数串（自动变量 $args），校验后再把参数原样
+#   交给主体函数 Invoke-AsqMain。
+#   为什么这样分层：参数写错（缺值 / 同一参数写两次 / 拼错参数名）时，PowerShell
+#   引擎会在脚本体执行之前抛英文报错，脚本体无法捕获、也无法改写；把参数声明移到
+#   主体函数后，文件顶部不再做参数绑定，写错的参数就能先落到本层被换成中文提示。
+#   参数清单不手工维护：校验规则从主体函数的参数声明读取（名称 / 别名 / 是否开关 /
+#   允许取值），主体新增参数自动纳入校验。
+#   判定为合法的输入原样转发，输出与退出码行为不变。
+# ============================================================================
+
+# 主体参数里由 PowerShell 自动提供的通用参数照常放行；RemainingArgs 是内部控制用，不参与校验。
+$asqSkipParams = @('RemainingArgs')
+
+function Get-AsqParamTable {
+    $table = @{}
+    $cmd = Get-Command -Name 'Invoke-AsqMain' -CommandType Function -ErrorAction SilentlyContinue
+    if ($null -eq $cmd) { return $table }
+    foreach ($name in $cmd.Parameters.Keys) {
+        if ($asqSkipParams -contains $name) { continue }
+        $p = $cmd.Parameters[$name]
+        $posAttr = $p.Attributes | Where-Object { $_ -is [System.Management.Automation.ParameterAttribute] } | Select-Object -First 1
+        $setAttr = $p.Attributes | Where-Object { $_ -is [System.Management.Automation.ValidateSetAttribute] } | Select-Object -First 1
+        $table[$name] = [pscustomobject]@{
+            Name        = $name
+            Switch      = ($p.ParameterType -eq [switch])
+            Aliases     = @($p.Aliases)
+            Position    = if ($null -ne $posAttr) { [int]$posAttr.Position } else { -1 }
+            ValidValues = if ($null -ne $setAttr) { @($setAttr.ValidValues) } else { @() }
+        }
+    }
+    return $table
+}
+
+function Get-AsqEditDistance {
+    param([string]$Left, [string]$Right)
+    $a = $Left.ToLowerInvariant()
+    $b = $Right.ToLowerInvariant()
+    $cols = $b.Length + 1
+    $prev = New-Object 'int[]' ([int]$cols)
+    $curr = New-Object 'int[]' ([int]$cols)
+    for ($j = 0; $j -lt $cols; $j++) { $prev[$j] = $j }
+    for ($i = 1; $i -le $a.Length; $i++) {
+        $curr[0] = $i
+        for ($j = 1; $j -lt $cols; $j++) {
+            $cost = 0
+            if ($a[$i - 1] -ne $b[$j - 1]) { $cost = 1 }
+            $del = $prev[$j] + 1
+            $ins = $curr[$j - 1] + 1
+            $sub = $prev[$j - 1] + $cost
+            $curr[$j] = [Math]::Min([Math]::Min($del, $ins), $sub)
+        }
+        $swap = $prev
+        $prev = $curr
+        $curr = $swap
+    }
+    return $prev[$cols - 1]
+}
+
+function Get-AsqSimilarParam {
+    param([string]$Token, [hashtable]$Table)
+    $scored = foreach ($name in $Table.Keys) {
+        $n = $name.ToLowerInvariant()
+        if ($n.StartsWith($Token) -or $n.Contains($Token) -or $Token.Contains($n)) {
+            [pscustomobject]@{ Name = $name; Score = 0 }
+        } else {
+            $dist = Get-AsqEditDistance -Left $Token -Right $n
+            if ($dist -le 3) { [pscustomobject]@{ Name = $name; Score = $dist } }
+        }
+    }
+    return @($scored | Sort-Object Score, Name | Select-Object -First 3 | ForEach-Object { $_.Name })
+}
+
+function Resolve-AsqParamToken {
+    param([string]$Token, [hashtable]$Table)
+    $lower = $Token.ToLowerInvariant()
+    $exact = @($Table.Keys | Where-Object { $_.ToLowerInvariant() -eq $lower })
+    if ($exact.Count -eq 1) { return [pscustomobject]@{ Kind = 'Found'; Name = $exact[0]; Candidates = @() } }
+    $aliasHit = @($Table.Keys | Where-Object { (@($Table[$_].Aliases) | ForEach-Object { $_.ToLowerInvariant() }) -contains $lower })
+    if ($aliasHit.Count -eq 1) { return [pscustomobject]@{ Kind = 'Found'; Name = $aliasHit[0]; Candidates = @() } }
+    $prefixHit = @($Table.Keys | Where-Object { $_.ToLowerInvariant().StartsWith($lower) })
+    if ($prefixHit.Count -eq 1) { return [pscustomobject]@{ Kind = 'Found'; Name = $prefixHit[0]; Candidates = @() } }
+    if ($prefixHit.Count -gt 1) { return [pscustomobject]@{ Kind = 'Ambiguous'; Name = ''; Candidates = @($prefixHit | Sort-Object) } }
+    return [pscustomobject]@{ Kind = 'Missing'; Name = ''; Candidates = @(Get-AsqSimilarParam -Token $lower -Table $Table) }
+}
+
+function Get-AsqValueExample {
+    param([string]$ParamName)
+    $examples = @{
+        Limit         = '例如 -n 20'
+        WithinDays    = '例如 -d 7 或 -d 7d'
+        SortBy        = '例如 -o LastActivity'
+        Type          = '例如 -Type 任务'
+        SessionId     = '例如 -s 1f2e3d'
+        SessionIdLike = '例如 -q 1f2e'
+        TitleLike     = '例如 -t 论文'
+        DbPath        = '例如 -DbPath C:\Users\me\.workbuddy\workbuddy.db'
+        RootPath      = '例如 -RootPath D:\sessions'
+        WorkspacePath = '例如 -WorkspacePath D:\codingKevin'
+    }
+    if ($examples.ContainsKey($ParamName)) { return $examples[$ParamName] }
+    return '开关类参数（如 -g / -Credits）不需要值；需要值的参数请写成「-参数名 值」。'
+}
+
+function Write-AsqArgError {
+    param([string]$Message)
+    $text = $Message.Trim()
+    if (-not $text.EndsWith('。')) { $text += '。' }
+    Write-Output ($text + '运行 asq -h 查看完整参数说明。')
+    exit 1
+}
+
+$asqTable = Get-AsqParamTable
+$asqNamed = @{}
+$asqOverflow = New-Object System.Collections.Generic.List[string]
+$asqSeen = @{}
+$asqFromPositional = @{}
+# 位置参数按参数声明里的 Position 顺序依次填充，已由名称指定的位置自动跳过（与 PowerShell 原生行为一致）
+$asqPositionalParams = @($asqTable.Values | Where-Object { $_.Position -ge 0 } | Sort-Object Position)
+$asqPosIndex = 0
+# 帮助 / 版本令牌原样放行：主体自己识别（--help / -? / help / --version / version 等写法）
+$asqPassthroughTokens = @('?', 'help', 'version')
+
+$asqRawArgs = @($args)
+$asqIndex = 0
+while ($asqIndex -lt $asqRawArgs.Count) {
+    $asqToken = [string]$asqRawArgs[$asqIndex]
+    if ([string]::IsNullOrWhiteSpace($asqToken)) { $asqIndex++; continue }
+
+    # 以 - 开头且不是负数，才按「参数名」处理；其余一律当值（来源、数字、路径等）
+    $asqIsOption = ($asqToken.Length -gt 1) -and $asqToken.StartsWith('-') -and ($asqToken -notmatch '^-\d')
+    if (-not $asqIsOption) {
+        while ($asqPosIndex -lt $asqPositionalParams.Count -and $asqNamed.ContainsKey($asqPositionalParams[$asqPosIndex].Name)) { $asqPosIndex++ }
+        if ($asqPosIndex -lt $asqPositionalParams.Count) {
+            $asqSlot = $asqPositionalParams[$asqPosIndex]
+            if ($asqSlot.ValidValues.Count -gt 0 -and ($asqSlot.ValidValues -notcontains $asqToken)) {
+                Write-AsqArgError ('{0} 只能是：{1}。' -f $asqSlot.Name, ($asqSlot.ValidValues -join ' / '))
+            }
+            $asqNamed[$asqSlot.Name] = $asqToken
+            $asqFromPositional[$asqSlot.Name] = $true
+            $asqPosIndex++
+        } else {
+            $asqOverflow.Add($asqToken)
+        }
+        $asqIndex++
+        continue
+    }
+
+    $asqBody = $asqToken.Substring(1)
+    if ($asqBody.StartsWith('-')) { $asqBody = $asqBody.Substring(1) }
+    $asqInlineValue = $null
+    if ($asqBody -match '^([^:=]+)[:=](.*)$') {
+        $asqBody = $Matches[1]
+        $asqInlineValue = $Matches[2]
+    }
+
+    if ($asqPassthroughTokens -contains $asqBody.ToLowerInvariant()) {
+        $asqOverflow.Add($asqToken)
+        $asqIndex++
+        continue
+    }
+
+    $asqResolved = Resolve-AsqParamToken -Token $asqBody -Table $asqTable
+    if ($asqResolved.Kind -eq 'Ambiguous') {
+        $asqList = ($asqResolved.Candidates | ForEach-Object { '-' + $_ }) -join '、'
+        Write-AsqArgError ('参数 -{0} 有多种可能的匹配：{1}。请写出完整参数名。' -f $asqBody, $asqList)
+    }
+    if ($asqResolved.Kind -eq 'Missing') {
+        if ($asqResolved.Candidates.Count -gt 0) {
+            $asqList = ($asqResolved.Candidates | ForEach-Object { '-' + $_ }) -join '、'
+            Write-AsqArgError ('没有 -{0} 这个参数；最接近的是 {1}。' -f $asqBody, $asqList)
+        }
+        Write-AsqArgError ('没有 -{0} 这个参数。' -f $asqBody)
+    }
+
+    $asqName = $asqResolved.Name
+    if ($asqFromPositional.ContainsKey($asqName)) {
+        Write-AsqArgError ('{0} 已经用位置参数写过一次了，又用 {1} 写了一遍。两者只用一种写法即可。' -f $asqName, $asqToken)
+    }
+    if ($asqSeen.ContainsKey($asqName)) {
+        Write-AsqArgError ('{0} 与 {1} 是同一个参数（参数名不分大小写、允许缩写），只写一次即可。' -f $asqSeen[$asqName], $asqToken)
+    }
+    $asqSeen[$asqName] = $asqToken
+
+    $asqSpec = $asqTable[$asqName]
+    if ($asqSpec.Switch) {
+        if ($null -ne $asqInlineValue) {
+            $asqNamed[$asqName] = -not ($asqInlineValue.ToLowerInvariant() -in @('false', '$false', '0'))
+        } else {
+            $asqNamed[$asqName] = $true
+        }
+        $asqIndex++
+        continue
+    }
+
+    $asqValue = $asqInlineValue
+    if ($null -eq $asqValue) {
+        $asqNext = $asqIndex + 1
+        while ($asqNext -lt $asqRawArgs.Count -and [string]::IsNullOrWhiteSpace([string]$asqRawArgs[$asqNext])) { $asqNext++ }
+        if ($asqNext -ge $asqRawArgs.Count) {
+            Write-AsqArgError ('{0} 后面需要一个值，但命令到此结束。{1}' -f $asqToken, (Get-AsqValueExample -ParamName $asqName))
+        }
+        $asqNextToken = [string]$asqRawArgs[$asqNext]
+        $asqNextIsOption = ($asqNextToken.Length -gt 1) -and $asqNextToken.StartsWith('-') -and ($asqNextToken -notmatch '^-\d')
+        if ($asqNextIsOption) {
+            Write-AsqArgError ('{0} 后面需要一个值，但它后面紧跟的是 {1}（另一个参数）。{2}' -f $asqToken, $asqNextToken, (Get-AsqValueExample -ParamName $asqName))
+        }
+        $asqValue = $asqNextToken
+        $asqIndex = $asqNext + 1
+    } else {
+        $asqIndex++
+    }
+
+    if ($asqSpec.ValidValues.Count -gt 0 -and ($asqSpec.ValidValues -notcontains $asqValue)) {
+        Write-AsqArgError ('{0} 只能填：{1}。' -f $asqToken, ($asqSpec.ValidValues -join ' / '))
+    }
+    $asqNamed[$asqName] = $asqValue
+}
+
+# 多余的位置参数原样转交给主体（主体用它识别 --help / help / version 等写法）
+if ($asqOverflow.Count -gt 0) {
+    $asqNamed['RemainingArgs'] = $asqOverflow.ToArray()
+}
+
+Invoke-AsqMain @asqNamed

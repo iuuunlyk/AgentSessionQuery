@@ -152,16 +152,20 @@ asq -Source workbuddy -g -c
 | `-HideStatus` | — | （仅 WorkBuddy 列表）隐藏 `Status` 列（该列默认显示） |
 | `-Tokens` | — | （仅 WorkBuddy 列表）显示 `Tokens` 列（该列默认隐藏） |
 | `-Credits` | — | （仅 WorkBuddy 列表）显示 `Credits` 列，按**显示积分**口径（该列默认隐藏） |
-| `-ActualCredits` | — | （仅 WorkBuddy 列表）`Credits` 列改按**实际积分**口径显示并自动展开该列（列头变为 `ActualCredits`，无需再带 `-Credits`） |
+| `-ActualCredits` | — | （仅 WorkBuddy 列表）显示 `ActualCredits` 列，按**实际积分**口径（该列默认隐藏）。与 `-Credits` 各管一列、互不替代：两个都带则并排两列（显示积分在前） |
 | `-Turns` | — | （仅 WorkBuddy 列表）显示 `Turns` 列（该列默认隐藏） |
 | `-Requests` | — | （仅 WorkBuddy 列表）显示 `Requests` 列（该列默认隐藏） |
 | `-FullSessionId` | — | 列表显示完整 SessionId（默认缩略为「前 2 字符 + `**` + 后 6 字符」；codex / claude / workbuddy 三源列表均生效） |
 
-> **WorkBuddy 列表可选列**：`Status` 默认显示，用 `-HideStatus` 关闭；`Tokens` / `Credits` / `Turns` / `Requests` 默认隐藏，用同名开关打开。这些开关**只影响列表渲染**——`-s` / `-c` 详情视图与 `-AsJson` 输出恒为全字段，不受影响；对 codex / claude 源无效（两源无对应字段，静默忽略、不报错）。数字列（Tokens / Credits / Turns / Requests）列宽按当前页内容自适应：取表头名与本页最长数值的较大者（codex / claude 列表的 Tokens 列同此规则）。
+> **WorkBuddy 列表可选列**：`Status` 默认显示，用 `-HideStatus` 关闭；`Tokens` / `Credits` / `ActualCredits` / `Turns` / `Requests` 默认隐藏，用同名开关打开。这些开关**只影响列表渲染**——`-s` / `-c` 详情视图与 `-AsJson` 输出恒为全字段，不受影响；对 codex / claude 源无效（两源无对应字段，静默忽略、不报错）。数字列（Tokens / Credits / ActualCredits / Turns / Requests）列宽按当前页内容自适应：取表头名与本页最长数值的较大者（codex / claude 列表的 Tokens 列同此规则）。
 >
-> **两种积分口径**：`Credits` 列默认按**显示积分**——WorkBuddy 界面所采用的统计口径：该会话派发的子智能体所消耗的积分合并计入该会话名下，子智能体行因界面无其积分记录而显示 `-`。加 `-ActualCredits` 后改按**实际积分**——对该会话自身每次请求所扣积分逐条相加所得的总数（来源：会话日志文件逐请求扣费记录）：子智能体各自独立成行、仅统计自身消耗，故子智能体行在本口径下有数值；因本地日志对部分请求记 0 而平台实际扣费，实际积分为下限值。两种口径均不含重复计数：显示积分父含子、实际积分各算各的。
+> **两种积分口径**：`Credits` 列按**显示积分**——WorkBuddy 界面所采用的统计口径：该会话派发的子智能体所消耗的积分合并计入该会话名下，子智能体行因界面无其积分记录而显示 `-`。`ActualCredits` 列按**实际积分**——对该会话自身每次请求所扣积分逐条相加所得的总数（来源：会话日志文件逐请求扣费记录）：子智能体各自独立成行、仅统计自身消耗，故子智能体行在本口径下有数值；因本地日志对部分请求记 0 而平台实际扣费，实际积分为下限值。两个开关各管一列，只带一个时只出那一列，两个都带则并排两列（显示积分在前），便于直接对照差额。两种口径均不含重复计数：显示积分父含子、实际积分各算各的。
+>
+> **`-` 与 `0.00` 的含义**：显示积分无记账条目时按三种情形区分——① 子智能体行 → `-`（界面把该行消耗并入父会话，本行在该口径下无数据）；② 有会话日志但平台未记录积分（全部请求走免积分模型时常见）→ `0.00`；③ 无会话日志 → `-`（无法判定）。实际积分只有「无会话日志」一种缺值情形，显示 `-`。`-AsJson` 输出原始记录（无记录为 `null`），不套用上述显示规则。
 
 > **`-d` / `-WithinDays` 口径**：`today` / `yesterday` 按**自然日 00:00** 切分；`week` 为**自然周**（本周一 00:00 起，周一为一周之首）；`month` 为**自然月**（本月 1 号 00:00 起）；数字 `7` / `7d` / `N` 为**滚动近 N 天**。所有形态都取「不早于某时刻」的下界，因此时间未知的会话不会命中。`-d` 作用于列表视图，对 `-s` 单会话详情视图不适用。
+
+> **参数写错时的提示**：报错为中文，并给出最接近的正确写法。典型三类——① 需要值的参数后面漏值（`asq workbuddy -n`）→ 提示「-n 后面需要一个值，例如 -n 20」；② 同一个参数写了两遍（`-Credits -credit`；参数名不分大小写、允许前缀缩写）→ 提示两者是同一个参数、只写一次；③ 参数名拼错（`-tokn`）→ 提示没有该参数，并给出最接近的 `-Tokens`。这类校验由 `asq.ps1` 的入口层完成，任何机器装上即生效，不依赖外部包装脚本；`-h` 帮助里也列了这三类示例。
 
 ---
 
@@ -205,13 +209,13 @@ asq -Source workbuddy -g -c
 | `Model` | 会话模型 | `sessions.model`（有 DB 行者）；合成会话取 transcript `providerData.model`（回退 `requestModelId` / `requestModelName`）；视图层把 `custom-local:<名>` 显示为 `BYOK:<名>`（`-AsJson` 保持原值） |
 | `Status` | 会话状态（原样显示，如 `completed` / `working` / `archived` / `error`；**默认显示**，`-HideStatus` 可关闭） | `sessions.status`；合成 `agent-*` 子智能体会话为派生值：父 transcript 有其 Agent 结果证据时按结果状态，否则借父会话 `status`，父不可知显示 `-` |
 | `Tokens` | 会话累计 token 总量（千分位，右对齐；**可选列，默认隐藏**，`-Tokens` 打开） | **v1.0.4 起解析 `projects/*.jsonl` transcript** 计算（行筛 + status 跳过 + usage 取法优先级 + `input_exclusive` 缓存减法 + reasoning 桶 + 去重保留较大 total）；**v1.0.5 起采集范围扩展为全部 `projects/**/*.jsonl` transcript**（含软删除会话与 `agent-*` 子智能体） |
-| `Credits` | **显示积分**（两位小数千分位，右对齐；仅 workbuddy 有此列；**可选列，默认隐藏**，`-Credits` 打开） | WorkBuddy 界面所采用的统计口径：`session_usage.credit_json` 全部请求值求和；该会话派发的子智能体消耗合并计入该会话名下，子智能体行无此记录、显示 `-`；`credit_json` 为空 / NULL 同样显示 `-` |
-| `ActualCredits` | **实际积分**（两位小数千分位，右对齐；仅 workbuddy；列表中由 `-ActualCredits` 将 Credits 列切换为本口径，详情视图与 `-AsJson` 恒与本字段并列输出） | 对该会话自身每次请求所扣积分逐条相加所得的总数：transcript 逐行累加 `providerData.rawUsage.credit`；子智能体各自独立成行、仅统计自身消耗；无 transcript 文件时显示 `-`；本地日志对部分请求记 0 而平台实际扣费，故为下限值 |
+| `Credits` | **显示积分**（两位小数千分位，右对齐；仅 workbuddy 有此列；**可选列，默认隐藏**，`-Credits` 打开） | WorkBuddy 界面所采用的统计口径：`session_usage.credit_json` 全部请求值求和；该会话派发的子智能体消耗合并计入该会话名下，子智能体行无此记录、显示 `-`；无记账条目时：有会话日志显示 `0.00`（全部请求走免积分模型时常见），无会话日志显示 `-` |
+| `ActualCredits` | **实际积分**（两位小数千分位，右对齐；仅 workbuddy；**可选列，默认隐藏**，`-ActualCredits` 打开；与 `Credits` 并传则两列并排；详情视图与 `-AsJson` 恒与本字段并列输出） | 对该会话自身每次请求所扣积分逐条相加所得的总数：transcript 逐行累加 `providerData.rawUsage.credit`；子智能体各自独立成行、仅统计自身消耗；无 transcript 文件时显示 `-`；本地日志对部分请求记 0 而平台实际扣费，故为下限值 |
 | `Turns` | 会话轮次数（有请求的轮次；右对齐；仅 workbuddy 有此列；**可选列，默认隐藏**，`-Turns` 打开） | transcript 逐行扫描：提问边界 = `<user_query>` 包裹的非空文本，或剥离 `<system-reminder>` 等内部注入后的非空纯文本 user 记录；首个提问前的用量归轮次 0 且计入总数；无请求的提问不计入 |
 | `Requests` | 模型调用请求数（右对齐；仅 workbuddy 有此列；**可选列，默认隐藏**，`-Requests` 打开） | 与 Tokens 同批记录：去重后带 usage 的模型调用条数 |
 | `WorkspacePath` | 真实工作区路径 | `sessions.cwd`（有 DB 行者）；列宽紧张时中间截断 `...` |
 
-`-c` / `-s` / `-AsJson` 额外 token 字段：`InputTokens`、`OutputTokens`、`CacheReadTokens`、`CacheWriteTokens`、`ReasoningTokens`（v1.0.4 起补齐，与 codex/claude 口径一致；`CACHE_READ_KEYS`/`CACHE_WRITE_KEYS` 覆盖 `cache_read_input_tokens`/`cache_creation_input_tokens`/`prompt_cache_hit_tokens` 等键；`Input` 已扣除缓存命中，五分量之和恒等于 `Tokens`）。其余字段：`SessionId`、`Type`、`Title`、`WorkspacePath`、`Model`、`Tokens`、`TokenSource`、`Credits`（积分消耗，会话合计，无数据为 `null`）、`Requests`（模型调用请求数）、`Turns`（会话轮次数）、`LastActivity`、`Mode`、`SourceMode`、`PermissionMode`、`Status`。
+`-c` / `-s` / `-AsJson` 额外 token 字段：`InputTokens`、`OutputTokens`、`CacheReadTokens`、`CacheWriteTokens`、`ReasoningTokens`（v1.0.4 起补齐，与 codex/claude 口径一致；`CACHE_READ_KEYS`/`CACHE_WRITE_KEYS` 覆盖 `cache_read_input_tokens`/`cache_creation_input_tokens`/`prompt_cache_hit_tokens` 等键；`Input` 已扣除缓存命中，五分量之和恒等于 `Tokens`）。其余字段：`SessionId`、`Type`、`Title`、`WorkspacePath`、`Model`、`Tokens`、`TokenSource`、`Credits`（显示积分，会话合计，无记账条目为 `null`——`-AsJson` 保留 `null` 不套用显示层的 `0.00`）、`ActualCredits`（实际积分，无会话日志为 `null`）、`Requests`（模型调用请求数）、`Turns`（会话轮次数）、`LastActivity`、`Mode`、`SourceMode`、`PermissionMode`、`Status`。
 
 ---
 
@@ -247,8 +251,8 @@ flowchart TD
 | LastActivity | `session_index` 更新时间 / 文件时间 | 末行 `timestamp`（UTC→本地） | `last_activity_at`→`updated_at`→`created_at` |
 | Status | 无此字段 | 无此字段 | `sessions.status`（列表**默认显示**，`-HideStatus` 关闭） |
 | Tokens | stateful-delta 解析（增量主源 + 去重） | 去重 + 分量之和（含 `agent-*`） | 全部 `projects/*.jsonl` transcript 解析（列表**默认隐藏**，`-Tokens` 打开） |
-| Credits | 无此字段 | 无此字段 | **显示积分**：`session_usage.credit_json` 求和（界面口径，父含子；界面无记录显示 `-`/`null`；列表**默认隐藏**，`-Credits` 打开） |
-| ActualCredits | 无此字段 | 无此字段 | **实际积分**：transcript 逐请求扣费记录累加（各算各的，下限值；无 transcript 显示 `-`/`null`；列表由 `-ActualCredits` 切换） |
+| Credits | 无此字段 | 无此字段 | **显示积分**：`session_usage.credit_json` 求和（界面口径，父含子；无记账条目时有日志显示 `0.00`、无日志显示 `-`，`-AsJson` 均为 `null`；列表**默认隐藏**，`-Credits` 打开） |
+| ActualCredits | 无此字段 | 无此字段 | **实际积分**：transcript 逐请求扣费记录累加（各算各的，下限值；无 transcript 显示 `-`/`null`；列表**默认隐藏**，`-ActualCredits` 打开，与 `Credits` 并传则并排两列） |
 | Turns | 无此字段 | 无此字段 | transcript 提问边界切分（有请求的轮次；列表**默认隐藏**，`-Turns` 打开） |
 | Requests | 无此字段 | 无此字段 | 去重后带 usage 的调用条数（列表**默认隐藏**，`-Requests` 打开） |
 
