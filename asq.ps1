@@ -100,7 +100,7 @@ param(
 
     [switch]$Requests,
 
-    # 列表态 SessionId 默认缩略为「前 2 字符 + ** + 后 6 字符」（占 10 字符位，让宽给 WorkspacePath）；
+    # 列表态 SessionId 默认缩略（普通会话取前 8 位；子智能体为 ag- + 去前缀后 6 位，让宽给 WorkspacePath）；
     # 带本开关则三源列表统一显示完整编号（表格整体变宽，窄窗口下 WorkspacePath 截断加剧，由调用者自担）。
     # 仅作用于列表渲染；-s / -c 详情与 -AsJson 本就输出完整编号，不受影响。
     [switch]$FullSessionId,
@@ -126,7 +126,7 @@ param(
 Set-StrictMode -Version Latest
 
 # 版本号单一真源：发版时仅改此处；帮助文本与 -v/-Version 输出均引用本变量
-$ScriptVersion = 'v1.7.0'
+$ScriptVersion = 'v1.7.1'
 
 if ($PSVersionTable.PSEdition -eq 'Desktop') {
     Write-Warning '建议使用 PowerShell 7 (pwsh) 运行本工具；当前为 Windows PowerShell 5.1，中文可能乱码。'
@@ -307,15 +307,19 @@ function Format-SessionCell {
 }
 
 # ============================================================================
-#列表态 SessionId 缩略
+# 列表态 SessionId 缩略
 # ============================================================================
 # 列表视图的 SessionId 只用于「两两区分是哪一条会话」，不承担复制 / 粘贴 /
 # 精确定位职责——完整编号在 -c / -s 详情视图与 -AsJson 输出中始终原值保留。
-# 因此列表态按「前 2 字符 + ** + 后 6 字符」缩略，固定占 10 个显示字符位，
-# 把原本 36 位的列宽让给 WorkspacePath。
+# 列表态缩略规则：
+#   普通会话：取完整编号前 8 位（如 303d43ad）；
+#   子智能体：固定前缀 ag- + 去掉 agent- 后字符串的前 6 位（如 ag-2046da）。
+# 子智能体用连字符把 ag 前缀与编号段隔开，使「这是一条子智能体」在列表里
+# 一眼可辨；代价是子智能体缩略号为 9 位、普通会话为 8 位，二者不再等长。
 #
 # 仅对长编号生效：短于阈值（默认 12 字符）的编号原样返回，避免把本已可读的
-# 短编号（如子智能体的短 ID）截成无意义的碎片。
+# 短编号（如 fixture 里的 agent-001）截成无意义的碎片。
+# 表头 SessionId 为 9 字符，故列宽下限取 9，两种缩略号都放得下。
 function Format-ListSessionId {
     param(
         [AllowNull()]
@@ -334,7 +338,32 @@ function Format-ListSessionId {
     if ($Full -or $SessionId.Length -le $MinLength) {
         return $SessionId
     }
-    return $SessionId.Substring(0, 2) + '**' + $SessionId.Substring($SessionId.Length - 6)
+    if ($SessionId.StartsWith('agent-', [System.StringComparison]::OrdinalIgnoreCase)) {
+        $rest = $SessionId.Substring(6)
+        return 'ag-' + $rest.Substring(0, [Math]::Min(6, $rest.Length))
+    }
+    return $SessionId.Substring(0, 8)
+}
+
+# 查询结果条数：列表与 -c 详细视图在表格上、下各输出一行，共用本模板。
+# 基础句恒为「共 M 条会话，本次列出 N 条」：M 是筛选完成后符合条件的总数，
+# N 是 -n 截断之后本次实际列出的条数。两数并排，全列出时相等，读者不必猜是否还有未列部分。
+# 被 -n 截断时在同一句里补上「把 -n 改成 M 即可看全」的提示，不新增输出行。
+# 结果为 0 条时不输出本行，保留既有的「未匹配到 session」与建议文字。
+# -s 单会话详情与 -AsJson 结构化输出不套用本规则。
+function Write-AsqResultCount {
+    param(
+        [int]$Count,
+        [int]$MatchedCount
+    )
+    if ($Count -le 0) { return }
+    $base = '共 {0} 条会话，本次列出 {1} 条' -f $MatchedCount, $Count
+    if ($MatchedCount -gt $Count) {
+        # 单引号字符串里的 '' 是转义后的单引号，输出为 参数 '-n M' 可显示全
+        Write-Output ($base + ('（参数 ''-n {0}'' 可显示全）' -f $MatchedCount))
+    } else {
+        Write-Output $base
+    }
 }
 
 # 视图层模型名压缩：WorkBuddy 自定义模型在采集源里记录为 custom-local:<模型名>
@@ -1966,8 +1995,8 @@ asq - 本机 Codex / Claude / WorkBuddy 历史会话统一查询命令
 来源专属选项:
   -s, -SessionId <sessionId>         查看指定会话完整详情（忽略路径过滤；仅 claude / workbuddy）
                                     注：-s 为单会话详情视图，-d / -WithinDays 对其不适用
-                                    匹配：先按完整编号精确匹配，不中则按编号子串模糊匹配（仅 SessionId 字段）
-                                    列表态 SessionId 缩略为「前2**后6」，可照缩略值里的片段模糊定位
+                                    匹配：完整编号精确 → 编号子串 → 列表缩略号相等，三级依次兜底
+                                    照列表上的缩略号即可直接定位（含 ag- 开头的子智能体）
   -RootPath <路径>                   Codex / Claude 数据根目录（仅 codex / claude；默认 ~/.codex 或 ~/.claude）
   -DbPath <路径>                     WorkBuddy 数据库文件路径（仅 workbuddy；默认 ~/.workbuddy/workbuddy.db）
   -Type <任务|空间>                   按派生类型筛选（仅 workbuddy：任务 / 空间）
@@ -1983,8 +2012,12 @@ asq - 本机 Codex / Claude / WorkBuddy 历史会话统一查询命令
   -Turns                             显示 WorkBuddy 列表的 Turns 列（轮次，该列默认隐藏）
   -Requests                          显示 WorkBuddy 列表的 Requests 列（请求数，该列默认隐藏）
                                      （这些开关仅影响 workbuddy 列表；-s / -c 详情与 -AsJson 恒为全字段）
-  -FullSessionId                     列表显示完整 SessionId（默认缩略为「前2**后6」；
-                                     codex / claude / workbuddy 三源列表均生效）
+  -FullSessionId                     列表显示完整 SessionId（默认缩略：普通会话前 8 位、
+                                     子智能体 ag- + 6 位；codex / claude / workbuddy 三源列表均生效）
+说明:
+  列表与 -c 详细视图在表格上、下各显示一行结果条数：「共 M 条会话，本次列出 N 条」；
+  被 -n 截断时在同一句末尾补「（参数 '-n M' 可显示全）」。结果为 0 条时不显示该行。
+  -s 单会话详情与 -AsJson 结构化输出不显示该行，也不改变其字段。
 "@
 }
 
@@ -2197,15 +2230,22 @@ $normalizedCurrentWorkspace = $currentWorkspace.Replace(
 
 if ($hasSessionId -and ($Source -eq 'claude' -or $Source -eq 'workbuddy')) {
     $targetId = $SessionId.Trim().ToLowerInvariant()
-    # 匹配策略：精确全等优先，不中则退回子串模糊匹配。
-    # 为什么需要模糊：列表态SessionId 已缩略为「前2**后6」（见 Format-ListSessionId），
-    # 用户照着列表敲回来的往往是片段而非完整 36 位编号。限定只匹配 SessionId 字段，
-    # 不跨 Title / WorkspacePath—— -s 的定位是「按编号定位会话看详情」，
-    # 跨字段会把标题关键词也变成详情入口，语义含混。
+    # 匹配策略：完整编号精确 → 编号子串 → 列表缩略号相等，三级依次兜底。
+    # 用户照着列表敲回来的往往是缩略号而非完整 36 位编号。前两级覆盖普通会话
+    # （前 8 位本就是完整编号的子串）；子智能体缩略号为 ag- + 6 位，不是完整编号的
+    # 子串（完整编号以 agent- 开头），故加第三级按列表缩略号反查。
+    # 第三级直接复用 Format-ListSessionId，缩略规则变更时反查自动跟随。
+    # 限定只匹配 SessionId 字段，不跨 Title / WorkspacePath—— -s 的定位是
+    # 「按编号定位会话看详情」，跨字段会把标题关键词也变成详情入口，语义含混。
     $matched = @($sessions | Where-Object { $_.SessionId -eq $targetId })
     if ($matched.Count -eq 0) {
         $matched = @($sessions | Where-Object {
             $_.SessionId -and $_.SessionId.ToLowerInvariant().Contains($targetId)
+        })
+    }
+    if ($matched.Count -eq 0) {
+        $matched = @($sessions | Where-Object {
+            $_.SessionId -and ((Format-ListSessionId -SessionId $_.SessionId).ToLowerInvariant() -eq $targetId)
         })
     }
     if ($matched.Count -eq 0) {
@@ -2346,9 +2386,15 @@ if ($SortBy -eq 'WorkspacePath') {
     )
 }
 
+# 符合条件总数：所有筛选完成之后、-n 截断之前记录，不额外读数据、不重复扫描。
+$matchedCount = @($sessions).Count
+
 if ($Limit -gt 0) {
     $sessions = @($sessions | Select-Object -First $Limit)
 }
+
+# 查询结果条数：口径为本次实际返回的条数（Limit 截断之后），不含被截断掉的部分。
+$resultCount = @($sessions).Count
 
 if (@($sessions).Count -eq 0) {
     if ($ShowCommands -or $hasAnyQuery) {
@@ -2377,6 +2423,7 @@ if (@($sessions).Count -eq 0) {
         } elseif ($hasWithinFilter) {
             Write-Output '建议：放宽时间范围（如 -d week / -d month）；当前路径下无结果时可加 -g 在全局 session 中检索。'
         }
+        # 空结果不输出条数行，只保留上面的提示与建议。
         exit 0
     }
 }
@@ -2455,6 +2502,9 @@ if ($AsJson) {
     exit 0
 }
 
+# 列表与 -c 详细视图：表格上方一行结果条数（下方另有同一行，便于长列表滚屏后回看）。
+Write-AsqResultCount -Count $resultCount -MatchedCount $matchedCount
+
 if ($ShowCommands) {
     if ($hasAnyQuery) {
         Write-Output ('检索范围: {0}' -f $searchScope)
@@ -2517,6 +2567,7 @@ if ($ShowCommands) {
         }
     }
     Write-Output ('-' * 80)
+    Write-AsqResultCount -Count $resultCount -MatchedCount $matchedCount
     exit 0
 }
 
@@ -2533,8 +2584,8 @@ if ($Source -eq 'codex') {
     # Tokens 列宽按当前页内容自适应：表头名与本页最长数值的较大者。
     $tokensWidth = 'Tokens'.Length
     foreach ($s in $sessions) { $tokensWidth = [Math]::Max($tokensWidth, $s.Tokens.ToString('N0').Length) }
-    # SessionId 列宽：默认缩略占 10 位；-FullSessionId 时按本页最长完整编号自适应。
-    $sidWidthList = 10
+    # SessionId 列宽：表头 SessionId 为 9 字符故取 9；普通缩略号 8 位、子智能体 ag- 缩略号 9 位均可容纳；-FullSessionId 时按本页最长完整编号自适应。
+    $sidWidthList = 9
     if ($FullSessionId) {
         foreach ($s in $sessions) { $sidWidthList = [Math]::Max($sidWidthList, ([string]$s.SessionId).Length) }
     }
@@ -2575,8 +2626,8 @@ if ($Source -eq 'codex') {
     # Tokens 列宽按当前页内容自适应：表头名与本页最长数值的较大者。
     $tokensWidth = 'Tokens'.Length
     foreach ($s in $sessions) { $tokensWidth = [Math]::Max($tokensWidth, $s.Tokens.ToString('N0').Length) }
-    # SessionId 列宽：默认缩略占 10 位；-FullSessionId 时按本页最长完整编号自适应。
-    $sidWidthList = 10
+    # SessionId 列宽：表头 SessionId 为 9 字符故取 9；普通缩略号 8 位、子智能体 ag- 缩略号 9 位均可容纳；-FullSessionId 时按本页最长完整编号自适应。
+    $sidWidthList = 9
     if ($FullSessionId) {
         foreach ($s in $sessions) { $sidWidthList = [Math]::Max($sidWidthList, ([string]$s.SessionId).Length) }
     }
@@ -2626,7 +2677,8 @@ if ($Source -eq 'codex') {
 
     # 数字可选列宽按当前页内容自适应：列宽 = 表头名与本页最长数值的较大者，
     # 避免固定 14 字符宽在短数值页面上留白浪费（自适应省出的宽度还给 WorkspacePath）。
-    $sidWidthList = 10
+    # SessionId 列宽下限取 9（表头 9 字符，也是子智能体 ag- 缩略号的长度）。
+    $sidWidthList = 9
     if ($FullSessionId) {
         foreach ($s in $sessions) { $sidWidthList = [Math]::Max($sidWidthList, ([string]$s.SessionId).Length) }
     }
@@ -2736,6 +2788,7 @@ if ($Source -eq 'codex') {
         Write-Output ($cells -join ' ')
     }
 }
+Write-AsqResultCount -Count $resultCount -MatchedCount $matchedCount
 }
 
 # ============================================================================

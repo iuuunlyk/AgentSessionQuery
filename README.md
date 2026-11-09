@@ -141,7 +141,7 @@ asq -Source workbuddy -g -c
 | `-WorkspacePath <路径>` | — | 指定用于筛选的工作区路径（默认当前 PowerShell 路径） |
 | `-q <词>` | — | 按 SessionId / Title / WorkspacePath 统一模糊筛选 |
 | `-t <词>` | `-TitleLike` | 仅按 Title 模糊筛选 |
-| `-s <id>` | `-SessionId` | （仅 Claude / WorkBuddy）查看指定会话完整详情，跨项目查找。先按完整编号精确匹配，未命中则按 SessionId 子串模糊匹配；命中多条时逐条输出详情 |
+| `-s <id>` | `-SessionId` | （仅 Claude / WorkBuddy）查看指定会话完整详情，跨项目查找。匹配顺序：完整编号精确 → 编号子串 → 列表缩略号相等；照列表上的缩略号（含 `ag-` 开头的子智能体）可直接定位；命中多条时逐条输出详情 |
 | `-SortBy <字段>` | `-o` | `LastActivity`（默认）/ `WorkspacePath` |
 | `-WithinDays <N\|Nd\|关键字>` | `-d` | 按最后活动时间筛选：`today` 今日，`yesterday` 昨日，`week` 本周（周一起），`month` 本月（1 号起），`7` / `7d` / `N` 滚动近 N 天；默认不筛选 |
 | `-ShowCommands` | `-c` | 详细视图（含路径、恢复命令、分支、模式、消息数、**token 统计**等） |
@@ -155,13 +155,17 @@ asq -Source workbuddy -g -c
 | `-ActualCredits` | — | （仅 WorkBuddy 列表）显示 `ActualCredits` 列，按**实际积分**口径（该列默认隐藏）。与 `-Credits` 各管一列、互不替代：两个都带则并排两列（显示积分在前） |
 | `-Turns` | — | （仅 WorkBuddy 列表）显示 `Turns` 列（该列默认隐藏） |
 | `-Requests` | — | （仅 WorkBuddy 列表）显示 `Requests` 列（该列默认隐藏） |
-| `-FullSessionId` | — | 列表显示完整 SessionId（默认缩略为「前 2 字符 + `**` + 后 6 字符」；codex / claude / workbuddy 三源列表均生效） |
+| `-FullSessionId` | — | 列表显示完整 SessionId（默认缩略：普通会话取前 8 位如 `303d43ad`；子智能体为 `ag-` + 去掉 `agent-` 后前 6 位如 `ag-2046da`，共 9 位；codex / claude / workbuddy 三源列表均生效） |
 
 > **WorkBuddy 列表可选列**：`Status` 默认显示，用 `-HideStatus` 关闭；`Tokens` / `Credits` / `ActualCredits` / `Turns` / `Requests` 默认隐藏，用同名开关打开。这些开关**只影响列表渲染**——`-s` / `-c` 详情视图与 `-AsJson` 输出恒为全字段，不受影响；对 codex / claude 源无效（两源无对应字段，静默忽略、不报错）。数字列（Tokens / Credits / ActualCredits / Turns / Requests）列宽按当前页内容自适应：取表头名与本页最长数值的较大者（codex / claude 列表的 Tokens 列同此规则）。
 >
 > **两种积分口径**：`Credits` 列按**显示积分**——WorkBuddy 界面所采用的统计口径：该会话派发的子智能体所消耗的积分合并计入该会话名下，子智能体行因界面无其积分记录而显示 `-`。`ActualCredits` 列按**实际积分**——对该会话自身每次请求所扣积分逐条相加所得的总数（来源：会话日志文件逐请求扣费记录）：子智能体各自独立成行、仅统计自身消耗，故子智能体行在本口径下有数值；因本地日志对部分请求记 0 而平台实际扣费，实际积分为下限值。两个开关各管一列，只带一个时只出那一列，两个都带则并排两列（显示积分在前），便于直接对照差额。两种口径均不含重复计数：显示积分父含子、实际积分各算各的。
 >
 > **`-` 与 `0.00` 的含义**：显示积分无记账条目时按三种情形区分——① 子智能体行 → `-`（界面把该行消耗并入父会话，本行在该口径下无数据）；② 有会话日志但平台未记录积分（全部请求走免积分模型时常见）→ `0.00`；③ 无会话日志 → `-`（无法判定）。实际积分只有「无会话日志」一种缺值情形，显示 `-`。`-AsJson` 输出原始记录（无记录为 `null`），不套用上述显示规则。
+>
+> **结果条数统计**：列表与 `-c` 详细视图在表格上、下各输出一行，上下两行内容相同，写法为「共 M 条会话，本次列出 N 条」：M 为所有筛选完成后符合条件的总数，N 为 `-n` 截断后本次实际列出的条数。全部列出时两数相等；被截断时在同一句末尾补「（参数 '-n M' 可显示全）」，`-n M` 为可一次看全的取值。结果为 0 条时不显示该行，只保留既有的提示与建议。三种来源一致；`-s` 单会话详情与 `-AsJson` 结构化输出不显示该行，字段也不变。
+>
+> **编号缩略与检索**：普通会话取完整编号前 8 位（如 `303d43ad`）；子智能体为 `ag-` + 去掉 `agent-` 后的前 6 位（如 `ag-2046da`，共 9 位），用连字符把子智能体标识与编号段隔开，便于在列表中一眼分辨。两者位数不再一致，但编号列宽下限为 9（表头 `SessionId` 为 9 字符），两种缩略号都放得下。短编号（≤12 字符）原样显示。`-s` 支持直接输入列表上的缩略号定位；完整编号在 `-FullSessionId`、`-s` / `-c` 详情与 `-AsJson` 中始终原值保留。Claude 侧部分子智能体编号含名称段（如 `agent-aday2-scan-…`），按同一规则取前 6 位时缩略号会带名称字符（如 `ag-aday2-`），位数仍为 9 位。
 
 > **`-d` / `-WithinDays` 口径**：`today` / `yesterday` 按**自然日 00:00** 切分；`week` 为**自然周**（本周一 00:00 起，周一为一周之首）；`month` 为**自然月**（本月 1 号 00:00 起）；数字 `7` / `7d` / `N` 为**滚动近 N 天**。所有形态都取「不早于某时刻」的下界，因此时间未知的会话不会命中。`-d` 作用于列表视图，对 `-s` 单会话详情视图不适用。
 
@@ -245,7 +249,7 @@ flowchart TD
 | Title | `session_index.jsonl` 的 `thread_name` | 末条 `custom-title`，无则留空 | `custom_title` → transcript `aiTitle`（末条）→ `sessions.title` → 首条用户消息（截 42 字） |
 | WorkspacePath | `session_meta.payload.cwd` | 每行 `cwd` | `sessions.cwd` |
 
-**列表态与详情态的差异**（三条数据源通用）：列表态的 `SessionId` 列只显示缩略值（前 2 个字符 + `**` + 后 6 个字符，占 10 个字符位），腾出的列宽给 `WorkspacePath`；加 `-FullSessionId` 可让三源列表统一显示完整编号（列宽按本页最长编号自适应）。`-c` / `-s` 详情视图与 `-AsJson` 输出中的 `SessionId` 与 `WorkspacePath` 均为完整原值，不受列表缩略影响。`WorkspacePath` 的路径分隔符统一为 Windows 风格（`\`）。
+**列表态与详情态的差异**（三条数据源通用）：列表态的 `SessionId` 列只显示缩略值（普通会话取完整编号前 8 位，如 `303d43ad`；子智能体为 `ag-` + 去掉 `agent-` 后的前 6 位，如 `ag-2046da`；短编号原样显示），腾出的列宽给 `WorkspacePath`；加 `-FullSessionId` 可让三源列表统一显示完整编号（列宽按本页最长编号自适应）。`-s` 支持直接输入列表上的缩略号定位会话（含 `ag-` 开头的子智能体）。`-c` / `-s` 详情视图与 `-AsJson` 输出中的 `SessionId` 与 `WorkspacePath` 均为完整原值，不受列表缩略影响。`WorkspacePath` 的路径分隔符统一为 Windows 风格（`\`）。
 | Lane / Type | `base_instructions` 痕迹判 `Codex/OMX` | 用 `mode` 区分 | `is_playground`/`is_background_automation` 派生 |
 | Model | `turn_context.payload.model`（过滤 synthetic/image） | 末行 `message.model` | `sessions.model` |
 | LastActivity | `session_index` 更新时间 / 文件时间 | 末行 `timestamp`（UTC→本地） | `last_activity_at`→`updated_at`→`created_at` |
