@@ -152,14 +152,14 @@ asq -Source workbuddy -g -c
 | `-HideStatus` | — | （仅 WorkBuddy 列表）隐藏 `Status` 列（该列默认显示） |
 | `-Tokens` | — | （仅 WorkBuddy 列表）显示 `Tokens` 列（该列默认隐藏） |
 | `-Credits` | — | （仅 WorkBuddy 列表）显示 `Credits` 列，按**显示积分**口径（该列默认隐藏） |
-| `-ActualCredits` | — | （仅 WorkBuddy 列表）显示 `ActualCredits` 列，按**实际积分**口径（该列默认隐藏）。与 `-Credits` 各管一列、互不替代：两个都带则并排两列（显示积分在前） |
+| `-ActualCredits` | — | （仅 WorkBuddy 列表）显示 `ACredits` 列（列表表头名；字段名仍为 `ActualCredits`），按**实际积分**口径（该列默认隐藏）。与 `-Credits` 各管一列、互不替代：两个都带则并排两列（显示积分在前） |
 | `-Turns` | — | （仅 WorkBuddy 列表）显示 `Turns` 列（该列默认隐藏） |
 | `-Requests` | — | （仅 WorkBuddy 列表）显示 `Requests` 列（该列默认隐藏） |
 | `-FullSessionId` | — | 列表显示完整 SessionId（默认缩略：普通会话取前 8 位如 `303d43ad`；子智能体为 `ag-` + 去掉 `agent-` 后前 6 位如 `ag-2046da`，共 9 位；codex / claude / workbuddy 三源列表均生效） |
 
-> **WorkBuddy 列表可选列**：`Status` 默认显示，用 `-HideStatus` 关闭；`Tokens` / `Credits` / `ActualCredits` / `Turns` / `Requests` 默认隐藏，用同名开关打开。这些开关**只影响列表渲染**——`-s` / `-c` 详情视图与 `-AsJson` 输出恒为全字段，不受影响；对 codex / claude 源无效（两源无对应字段，静默忽略、不报错）。数字列（Tokens / Credits / ActualCredits / Turns / Requests）列宽按当前页内容自适应：取表头名与本页最长数值的较大者（codex / claude 列表的 Tokens 列同此规则）。
+> **WorkBuddy 列表可选列**：`Status` 默认显示，用 `-HideStatus` 关闭；`Tokens` / `Credits` / `ACredits` / `Turns` / `Requests` 默认隐藏，用同名开关打开（`ACredits` 由 `-ActualCredits` 打开，只是列表表头缩写；字段名、详情视图标签与 `-AsJson` 字段仍为 `ActualCredits`）。这些开关**只影响列表渲染**——`-s` / `-c` 详情视图与 `-AsJson` 输出恒为全字段，不受影响；对 codex / claude 源无效（两源无对应字段，静默忽略、不报错）。`Model` 列与数字列（Tokens / Credits / ACredits / Turns / Requests）列宽均按当前页内容自适应：取表头名与本页最长内容的较大者，且不超过各来源原有的固定列宽——短内容时收窄，长内容时不被截得更短；三个来源的 `Model` 列都用同一条规则，codex / claude 列表的 `Tokens` 列亦同。省下的宽度按既有比例分给 `Title` 与 `WorkspacePath`；终端宽度不足时只让整行变短，不撑宽这两列。
 >
-> **两种积分口径**：`Credits` 列按**显示积分**——WorkBuddy 界面所采用的统计口径：该会话派发的子智能体所消耗的积分合并计入该会话名下，子智能体行因界面无其积分记录而显示 `-`。`ActualCredits` 列按**实际积分**——对该会话自身每次请求所扣积分逐条相加所得的总数（来源：会话日志文件逐请求扣费记录）：子智能体各自独立成行、仅统计自身消耗，故子智能体行在本口径下有数值；因本地日志对部分请求记 0 而平台实际扣费，实际积分为下限值。两个开关各管一列，只带一个时只出那一列，两个都带则并排两列（显示积分在前），便于直接对照差额。两种口径均不含重复计数：显示积分父含子、实际积分各算各的。
+> **两种积分口径**：`Credits` 列按**显示积分**——WorkBuddy 界面所采用的统计口径：该会话派发的子智能体所消耗的积分合并计入该会话名下，子智能体行因界面无其积分记录而显示 `-`。`ACredits` 列按**实际积分**——对该会话自身每次请求所扣积分逐条相加所得的总数（来源：会话日志文件逐请求扣费记录）：子智能体各自独立成行、仅统计自身消耗，故子智能体行在本口径下有数值；因本地日志对部分请求记 0 而平台实际扣费，实际积分为下限值。列表表头缩写为 `ACredits`；详情视图标签与 `-AsJson` 字段名仍为 `ActualCredits`。两个开关各管一列，只带一个时只出那一列，两个都带则并排两列（显示积分在前），便于直接对照差额。两种口径均不含重复计数：显示积分父含子、实际积分各算各的。
 >
 > **`-` 与 `0.00` 的含义**：显示积分无记账条目时按三种情形区分——① 子智能体行 → `-`（界面把该行消耗并入父会话，本行在该口径下无数据）；② 有会话日志但平台未记录积分（全部请求走免积分模型时常见）→ `0.00`；③ 无会话日志 → `-`（无法判定）。实际积分只有「无会话日志」一种缺值情形，显示 `-`。`-AsJson` 输出原始记录（无记录为 `null`），不套用上述显示规则。
 >
@@ -214,7 +214,7 @@ asq -Source workbuddy -g -c
 | `Status` | 会话状态（原样显示，如 `completed` / `working` / `archived` / `error`；**默认显示**，`-HideStatus` 可关闭） | `sessions.status`；合成 `agent-*` 子智能体会话为派生值：父 transcript 有其 Agent 结果证据时按结果状态，否则借父会话 `status`，父不可知显示 `-` |
 | `Tokens` | 会话累计 token 总量（千分位，右对齐；**可选列，默认隐藏**，`-Tokens` 打开） | **v1.0.4 起解析 `projects/*.jsonl` transcript** 计算（行筛 + status 跳过 + usage 取法优先级 + `input_exclusive` 缓存减法 + reasoning 桶 + 去重保留较大 total）；**v1.0.5 起采集范围扩展为全部 `projects/**/*.jsonl` transcript**（含软删除会话与 `agent-*` 子智能体） |
 | `Credits` | **显示积分**（两位小数千分位，右对齐；仅 workbuddy 有此列；**可选列，默认隐藏**，`-Credits` 打开） | WorkBuddy 界面所采用的统计口径：`session_usage.credit_json` 全部请求值求和；该会话派发的子智能体消耗合并计入该会话名下，子智能体行无此记录、显示 `-`；无记账条目时：有会话日志显示 `0.00`（全部请求走免积分模型时常见），无会话日志显示 `-` |
-| `ActualCredits` | **实际积分**（两位小数千分位，右对齐；仅 workbuddy；**可选列，默认隐藏**，`-ActualCredits` 打开；与 `Credits` 并传则两列并排；详情视图与 `-AsJson` 恒与本字段并列输出） | 对该会话自身每次请求所扣积分逐条相加所得的总数：transcript 逐行累加 `providerData.rawUsage.credit`；子智能体各自独立成行、仅统计自身消耗；无 transcript 文件时显示 `-`；本地日志对部分请求记 0 而平台实际扣费，故为下限值 |
+| `ActualCredits` | **实际积分**（两位小数千分位，右对齐；仅 workbuddy；**可选列，默认隐藏**，`-ActualCredits` 打开，列表表头缩写为 `ACredits`；与 `Credits` 并传则两列并排；详情视图与 `-AsJson` 恒与本字段并列输出） | 对该会话自身每次请求所扣积分逐条相加所得的总数：transcript 逐行累加 `providerData.rawUsage.credit`；子智能体各自独立成行、仅统计自身消耗；无 transcript 文件时显示 `-`；本地日志对部分请求记 0 而平台实际扣费，故为下限值 |
 | `Turns` | 会话轮次数（有请求的轮次；右对齐；仅 workbuddy 有此列；**可选列，默认隐藏**，`-Turns` 打开） | transcript 逐行扫描：提问边界 = `<user_query>` 包裹的非空文本，或剥离 `<system-reminder>` 等内部注入后的非空纯文本 user 记录；首个提问前的用量归轮次 0 且计入总数；无请求的提问不计入 |
 | `Requests` | 模型调用请求数（右对齐；仅 workbuddy 有此列；**可选列，默认隐藏**，`-Requests` 打开） | 与 Tokens 同批记录：去重后带 usage 的模型调用条数 |
 | `WorkspacePath` | 真实工作区路径 | `sessions.cwd`（有 DB 行者）；列宽紧张时中间截断 `...` |
@@ -267,7 +267,7 @@ flowchart TD
 - **只读、零写入**：工具只读取 AI 客户端自己落盘的 JSONL / SQLite，绝不修改 transcript 或数据库（WorkBuddy 以 `?mode=ro` 只读 URI 打开）。
 - **容错优先**：逐行解析 JSONL，「坏行 / 缺字段 / 编码异常 → 跳过并继续」，单个损坏会话不拖垮整体扫描。
 - **工作区语义**：默认以「当前 PowerShell 路径」为作用域，贴合「在项目目录里看本项目历史」的真实心智。
-- **展示自适应**：文本表格按 Unicode 文本元素计算显示宽度；`Tokens` 列右对齐、`-c` 明细标签统一宽度 17；脚本化集成用 `-AsJson` 输出完整字段合约。
+- **展示自适应**：文本表格按 Unicode 文本元素计算显示宽度；`Model` 列与 WorkBuddy 数字可选列按当前页内容决定列宽（表头名与本页最长内容取大者，不超过原有固定列宽）；`Tokens` 列右对齐、`-c` 明细标签统一宽度 17；脚本化集成用 `-AsJson` 输出完整字段合约。
 - **编码健壮**：显式 UTF-8 读取，并对历史 GBK→UTF-8 mojibake 自动修复（仅 Codex 侧需要）。
 - **可移植**：数据源三态检测 + PowerShell 5.1 告警 + 全 `$HOME` 相对（零硬写用户名/盘符）+ WorkBuddy Python 运行时版本无关（扫描 `versions/*` 取最高版）；工具仍**仅面向 Windows 设计**（详见「环境要求 → 操作系统」与「已知限制」），复制到别的 **Windows** 机器也能运行。
 

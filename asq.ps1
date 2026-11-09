@@ -126,7 +126,7 @@ param(
 Set-StrictMode -Version Latest
 
 # 版本号单一真源：发版时仅改此处；帮助文本与 -v/-Version 输出均引用本变量
-$ScriptVersion = 'v1.7.1'
+$ScriptVersion = 'v1.7.2'
 
 if ($PSVersionTable.PSEdition -eq 'Desktop') {
     Write-Warning '建议使用 PowerShell 7 (pwsh) 运行本工具；当前为 Windows PowerShell 5.1，中文可能乱码。'
@@ -380,6 +380,49 @@ function ConvertTo-DisplayModel {
         return 'BYOK:' + $Model.Substring(13)
     }
     return $Model
+}
+
+# ============================================================================
+# 列表列宽自适应（仅用于算宽度，不改动 Format-SessionCell 的渲染逻辑）
+# ============================================================================
+# 显示宽度口径与 Format-SessionCell 一致：ASCII(≤0x7F) 与歧义宽度字符算 1，
+# 其余（含中文/CJK）算 2，按 Unicode 文本元素切分。
+function Get-AsqTextDisplayWidth {
+    param([AllowNull()][string]$Text)
+
+    if ([string]::IsNullOrEmpty($Text)) { return 0 }
+    $width = 0
+    $enumerator = [System.Globalization.StringInfo]::GetTextElementEnumerator($Text)
+    while ($enumerator.MoveNext()) {
+        $element = $enumerator.GetTextElement()
+        $codePoint = [int][char]$element[0]
+        if ($codePoint -le 0x7F -or (Test-SessionAmbiguousWidthChar -CodePoint $codePoint)) {
+            $width += 1
+        } else {
+            $width += 2
+        }
+    }
+    return $width
+}
+
+# 列宽 = 「表头名」与「本页最长内容」显示宽度的较大者，且不超过 MaxWidth。
+# MaxWidth 沿用各来源原有的固定列宽：短内容时收窄，长内容时与改动前一致，
+# 不会把长模型名截得比原来更短。换行与 Format-SessionCell 一样压成空格。
+function Get-AsqColumnWidth {
+    param(
+        [Parameter(Mandatory = $true)][string]$Header,
+        [AllowNull()][object[]]$Values,
+        [Parameter(Mandatory = $true)][int]$MaxWidth
+    )
+
+    $width = Get-AsqTextDisplayWidth -Text $Header
+    foreach ($value in $Values) {
+        if ($null -eq $value) { continue }
+        $text = ([string]$value) -replace "`r?`n", ' '
+        $w = Get-AsqTextDisplayWidth -Text $text
+        if ($w -gt $width) { $width = $w }
+    }
+    return [Math]::Min($width, $MaxWidth)
 }
 
 # ============================================================================
@@ -2005,7 +2048,7 @@ asq - 本机 Codex / Claude / WorkBuddy 历史会话统一查询命令
   -Credits                           显示 WorkBuddy 列表的 Credits 列（显示积分，该列默认隐藏）。
                                     显示积分 = WorkBuddy 界面所采用的统计口径：该会话派发的
                                     子智能体所消耗的积分合并计入该会话名下，子智能体行显示 -
-  -ActualCredits                     显示 WorkBuddy 列表的 ActualCredits 列（实际积分）。与 -Credits
+  -ActualCredits                     显示 WorkBuddy 列表的 ACredits 列（实际积分；字段名仍为 ActualCredits）。与 -Credits
                                     各管一列，两个都带则并排显示（显示积分在前）。
                                      实际积分 = 对该会话自身每次请求所扣积分逐条相加所得的总数；
                                      子智能体各自独立成行、仅统计自身消耗；本口径为下限值
@@ -2589,7 +2632,11 @@ if ($Source -eq 'codex') {
     if ($FullSessionId) {
         foreach ($s in $sessions) { $sidWidthList = [Math]::Max($sidWidthList, ([string]$s.SessionId).Length) }
     }
-    $widths = @{ Lane = 5; SessionId = $sidWidthList; LastActivity = 19; Model = 24; Tokens = $tokensWidth }
+    # Model 列宽按当前页内容自适应：表头名与本页最长显示模型名的较大者，上限沿用原固定宽度 24。
+    $modelWidth = Get-AsqColumnWidth -Header 'Model' -MaxWidth 24 -Values @(
+        foreach ($s in $sessions) { ConvertTo-DisplayModel -Model $s.Model }
+    )
+    $widths = @{ Lane = 5; SessionId = $sidWidthList; LastActivity = 19; Model = $modelWidth; Tokens = $tokensWidth }
     $numColumns = 7
     $fixedWidth = $widths.Lane + $widths.SessionId + $widths.LastActivity + $widths.Model + $widths.Tokens + ($numColumns - 1)
     $remainingWidth = [Math]::Max($consoleWidth - $fixedWidth, 56)
@@ -2631,7 +2678,11 @@ if ($Source -eq 'codex') {
     if ($FullSessionId) {
         foreach ($s in $sessions) { $sidWidthList = [Math]::Max($sidWidthList, ([string]$s.SessionId).Length) }
     }
-    $widths = @{ SessionId = $sidWidthList; LastActivity = 16; Model = 24; Tokens = $tokensWidth }
+    # Model 列宽按当前页内容自适应：表头名与本页最长显示模型名的较大者，上限沿用原固定宽度 24。
+    $modelWidth = Get-AsqColumnWidth -Header 'Model' -MaxWidth 24 -Values @(
+        foreach ($s in $sessions) { ConvertTo-DisplayModel -Model $s.Model }
+    )
+    $widths = @{ SessionId = $sidWidthList; LastActivity = 16; Model = $modelWidth; Tokens = $tokensWidth }
     $numColumns = 6
     $fixedWidth = $widths.SessionId + $widths.LastActivity + $widths.Model + $widths.Tokens + ($numColumns - 1)
     $remainingWidth = [Math]::Max($consoleWidth - $fixedWidth, 56)
@@ -2667,7 +2718,8 @@ if ($Source -eq 'codex') {
     # Turns / Requests 默认隐藏，各由同名开关打开。Credits 与 ActualCredits 各管一列、互不替代：
     # 只带一个时只出那一列，两个都带则并排两列（显示积分在前）。
     # 列顺序固定：Type / SessionId / LastActivity / Title / Model / [Status] / [Tokens] / [Credits] /
-    #             [ActualCredits] / [Turns] / [Requests] / WorkspacePath。
+    #             [ACredits] / [Turns] / [Requests] / WorkspacePath。
+    # 实际积分列的列表表头写作 ACredits（8 字符）；参数名、详情视图、-AsJson 字段名仍为 ActualCredits。
     $showStatus  = -not $HideStatus.IsPresent
     $showTokens  = $Tokens.IsPresent
     $showCredits = $Credits.IsPresent
@@ -2682,7 +2734,11 @@ if ($Source -eq 'codex') {
     if ($FullSessionId) {
         foreach ($s in $sessions) { $sidWidthList = [Math]::Max($sidWidthList, ([string]$s.SessionId).Length) }
     }
-    $widths = @{ Type = 5; SessionId = $sidWidthList; LastActivity = 19; Model = 20; Status = 10 }
+    # Model 列宽按当前页内容自适应：表头名与本页最长显示模型名的较大者，上限沿用原固定宽度 20。
+    $modelWidth = Get-AsqColumnWidth -Header 'Model' -MaxWidth 20 -Values @(
+        foreach ($s in $sessions) { ConvertTo-DisplayModel -Model $s.Model }
+    )
+    $widths = @{ Type = 5; SessionId = $sidWidthList; LastActivity = 19; Model = $modelWidth; Status = 10 }
     if ($showTokens) {
         $w = 'Tokens'.Length
         foreach ($s in $sessions) { $w = [Math]::Max($w, $s.Tokens.ToString('N0').Length) }
@@ -2696,7 +2752,8 @@ if ($Source -eq 'codex') {
         $widths.Credits = $w
     }
     if ($showActualCredits) {
-        $w = 'ActualCredits'.Length
+        # 列表表头为 ACredits（8 字符）；字段名 ActualCredits 不变，仅显示层用短名。
+        $w = 'ACredits'.Length
         foreach ($s in $sessions) {
             $w = [Math]::Max($w, (Format-CreditsDisplay -Session $s -Actual).Length)
         }
@@ -2750,7 +2807,7 @@ if ($Source -eq 'codex') {
         $ruleCells += ('-' * $widths.Credits)
     }
     if ($showActualCredits) {
-        $headerCells += (Format-SessionCell -Text 'ActualCredits' -Width $widths.ActualCredits -Align right)
+        $headerCells += (Format-SessionCell -Text 'ACredits' -Width $widths.ActualCredits -Align right)
         $ruleCells += ('-' * $widths.ActualCredits)
     }
     if ($showTurns) {

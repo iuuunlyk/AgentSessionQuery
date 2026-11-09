@@ -2,6 +2,13 @@
 
 格式遵循 [Keep a Changelog 2.0.0](https://keepachangelog.com/en/2.0.0/)，版本号遵循 [Semantic Versioning 2.0.0](https://semver.org/spec/v2.0.0.html)。
 
+## [1.7.2] - 2026-11-09
+
+### Changed（变更）
+
+- 列表 Model 列宽按查询结果页的最长模型名自适应，上限沿用各来源（codex、claude、workbuddy）原有宽度，三个来源一致。
+- 实际积分（原 ActualCredits）列表头改为 `ACredits`。
+
 ## [1.7.1] - 2026-11-09
 
 ### Added（新增）
