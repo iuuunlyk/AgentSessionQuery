@@ -126,7 +126,7 @@ param(
 Set-StrictMode -Version Latest
 
 # 版本号单一真源：发版时仅改此处；帮助文本与 -v/-Version 输出均引用本变量
-$ScriptVersion = 'v1.7.2'
+$ScriptVersion = 'v1.7.3'
 
 if ($PSVersionTable.PSEdition -eq 'Desktop') {
     Write-Warning '建议使用 PowerShell 7 (pwsh) 运行本工具；当前为 Windows PowerShell 5.1，中文可能乱码。'
@@ -222,7 +222,23 @@ function Format-SessionCell {
         while ($enumerator.MoveNext()) {
             $element = $enumerator.GetTextElement()
             $codePoint = [int][char]$element[0]
-            if ($codePoint -le 0x7F) {
+            # emoji 组合序列：如键帽数字 1️⃣（U+0031 + FE0F 变形符 + 20E3 键帽圈），
+            # 在 .NET 里被算作一个文本元素，首码点是 ASCII 数字会误判为 1 格，
+            # 但终端把整个序列渲染成 2 格。少算一格会让该行末列右移、整行变宽而折行。
+            # 凡元素内含 emoji 修饰码点者一律按 2 格，与终端显示一致。
+            $isEmojiSequence = $false
+            if ($element.Length -gt 1) {
+                foreach ($ch in $element.ToCharArray()) {
+                    $cp = [int]$ch
+                    if ($cp -eq 0xFE0F -or $cp -eq 0x20E3 -or $cp -ge 0x1F000) {
+                        $isEmojiSequence = $true
+                        break
+                    }
+                }
+            }
+            if ($isEmojiSequence) {
+                $width += 2
+            } elseif ($codePoint -le 0x7F) {
                 $width += 1
             } elseif (Test-SessionAmbiguousWidthChar -CodePoint $codePoint) {
                 $width += 1

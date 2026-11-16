@@ -2,6 +2,12 @@
 
 格式遵循 [Keep a Changelog 2.0.0](https://keepachangelog.com/en/2.0.0/)，版本号遵循 [Semantic Versioning 2.0.0](https://semver.org/spec/v2.0.0.html)。
 
+## [1.7.3] - 2026-11-16
+
+### Fixed（修复）
+
+- 列表标题含 emoji 合成字符（如 `1️⃣`）时，按终端实际显示宽度计算列宽。
+
 ## [1.7.2] - 2026-11-09
 
 ### Changed（变更）
