@@ -2,6 +2,17 @@
 
 格式遵循 [Keep a Changelog 2.0.0](https://keepachangelog.com/en/2.0.0/)，版本号遵循 [Semantic Versioning 2.0.0](https://semver.org/spec/v2.0.0.html)。
 
+## [1.7.4] - 2026-11-21
+
+### Added（新增）
+
+- 新增屏幕单次 200 条的显示上限，超过上限时提示改用 -AsJson 导出全部。
+
+### Changed（变更）
+
+- 优化查询结果条数行的显示，前后加尖括号并以青色高亮。
+- 调整 Token 退化警告，移至输出末行、改为灰色，句末原文「不恒等式」改为「非精确值」。
+
 ## [1.7.3] - 2026-11-16
 
 ### Fixed（修复）

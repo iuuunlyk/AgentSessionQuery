@@ -126,7 +126,7 @@ param(
 Set-StrictMode -Version Latest
 
 # 版本号单一真源：发版时仅改此处；帮助文本与 -v/-Version 输出均引用本变量
-$ScriptVersion = 'v1.7.3'
+$ScriptVersion = 'v1.7.4'
 
 if ($PSVersionTable.PSEdition -eq 'Desktop') {
     Write-Warning '建议使用 PowerShell 7 (pwsh) 运行本工具；当前为 Windows PowerShell 5.1，中文可能乱码。'
@@ -361,10 +361,20 @@ function Format-ListSessionId {
     return $SessionId.Substring(0, 8)
 }
 
+# 屏幕视图单次输出上限：-n 超过本值时截到本值，避免一次刷出过多行。
+# 只作用于屏幕视图（列表 / -c 详情）；-AsJson 导出免上限，可一次取全量。
+$script:AsqScreenLimit = 200
+
 # 查询结果条数：列表与 -c 详细视图在表格上、下各输出一行，共用本模板。
 # 基础句恒为「共 M 条会话，本次列出 N 条」：M 是筛选完成后符合条件的总数，
 # N 是 -n 截断之后本次实际列出的条数。两数并排，全列出时相等，读者不必猜是否还有未列部分。
-# 被 -n 截断时在同一句里补上「把 -n 改成 M 即可看全」的提示，不新增输出行。
+# 被 -n 截断时在同一句里补提示，不新增输出行：总数未超屏幕上限时补「把 -n 改成 M 即可看全」；
+# 总数超过屏幕上限（脚本级 $AsqScreenLimit）时，因 -n 再大也只能截断到上限，改为引导用 -AsJson 导出全部。
+# 本行前后各加 8 个尖括号（加一个空格共 9 字符宽，与警告前缀等宽，两处正文左对齐）；只改显示文本，不新增输出行。
+# 只高亮前后尖括号：用内联颜色码把柔和青色只套在尖括号上，正文保持终端默认色。写成写屏输出，
+# 仅在终端显示时带色；被捕获或重定向时颜色码自动剥离、正文仍是一整行（不会碎成三段、不夹乱码）。
+# PS 5.1 无 $PSStyle 时退化为整行青色 Write-Host（该版本仅温和告警、非主支持）。
+# 重点结果色自本版起由黄色改为青色（用户反馈亮黄刺眼）；警告行仍是灰色弱化，不占用青色。
 # 结果为 0 条时不输出本行，保留既有的「未匹配到 session」与建议文字。
 # -s 单会话详情与 -AsJson 结构化输出不套用本规则。
 function Write-AsqResultCount {
@@ -375,10 +385,31 @@ function Write-AsqResultCount {
     if ($Count -le 0) { return }
     $base = '共 {0} 条会话，本次列出 {1} 条' -f $MatchedCount, $Count
     if ($MatchedCount -gt $Count) {
-        # 单引号字符串里的 '' 是转义后的单引号，输出为 参数 '-n M' 可显示全
-        Write-Output ($base + ('（参数 ''-n {0}'' 可显示全）' -f $MatchedCount))
+        if ($MatchedCount -gt $script:AsqScreenLimit) {
+            $base += ('（屏幕单次最多 {0} 条，用 -AsJson 导出全部）' -f $script:AsqScreenLimit)
+        } else {
+            # 单引号字符串里的 '' 是转义后的单引号，输出为 参数 '-n M' 可显示全
+            $base += ('（参数 ''-n {0}'' 可显示全）' -f $MatchedCount)
+        }
+    }
+    if ($PSStyle) {
+        $cyan = $PSStyle.Foreground.Cyan
+        $reset = $PSStyle.Reset
+        Write-Host (('{0}{1}{2} {3} {0}{4}{2}' -f $cyan, ('>' * 8), $reset, $base, ('<' * 8)))
     } else {
-        Write-Output $base
+        Write-Host -ForegroundColor Cyan ('>>>>>>>> {0} <<<<<<<<' -f $base)
+    }
+}
+
+# Token 退化警告：原先在采集阶段立即输出，位置落在所有视图之前。
+# 现改为采集阶段只置标志、各视图渲染末尾统一发出，使警告落在输出最后一行。
+# 触发口径不变：只要本批采集记录中有一条取自 session_usage.used 兜底即置位。
+# 视觉弱化为灰色，但保留 WARNING: 前缀与原有文字；青色用于结果数量行。
+# 灰色同样只作用于屏幕显示，捕获/重定向时颜色码剥离、正文保留，且不再走警告流（改走屏幕流）。
+$script:AsqTokenFallbackDetected = $false
+function Write-AsqTokenFallbackWarning {
+    if ($script:AsqTokenFallbackDetected) {
+        Write-Host -ForegroundColor DarkGray ('WARNING: 部分会话未找到 transcript，Tokens 已退化到 session_usage.used 兜底口径（仅供量级参考，非精确值）。')
     }
 }
 
@@ -1966,7 +1997,7 @@ function Get-WorkBuddySessions {
     }
 
     if (@($records | Where-Object { $_.TokenSource -eq 'used_fallback' }).Count -gt 0) {
-        Write-Warning '部分会话未找到 transcript，Tokens 已退化到 session_usage.used 兜底口径（仅供量级参考，不恒等式）。'
+        $script:AsqTokenFallbackDetected = $true
     }
 
     @($records)
@@ -2041,7 +2072,8 @@ asq - 本机 Codex / Claude / WorkBuddy 历史会话统一查询命令
   -q, -SessionIdLike <检索词>        按 SessionId / Title / WorkspacePath 统一模糊筛选
   -t, -TitleLike <标题词>            仅按 Title 模糊筛选
   -o, -SortBy <LastActivity|WorkspacePath>   排序方式：LastActivity 按最近活动、WorkspacePath 按工作区路径（默认 LastActivity）
-  -n, -Limit <N>                     限制输出条数（默认 20；也可直接写数字，如 asq codex 50）
+  -n, -Limit <N>                     限制输出条数（默认 20；屏幕单次最多 200，超出按 200 截断并提示；
+                                    也可直接写数字，如 asq codex 50；-AsJson 导出不受 200 限制）
   -d, -WithinDays <N|Nd|关键字>      按最后活动时间筛选（默认不筛选）。写法：7 或 7d = 滚动近 7 天，
                                     N / Nd = 滚动近 N 天；today = 今日；yesterday = 昨日；
                                     week = 本周（周一起）；month = 本月（1 号起）
@@ -2074,9 +2106,12 @@ asq - 本机 Codex / Claude / WorkBuddy 历史会话统一查询命令
   -FullSessionId                     列表显示完整 SessionId（默认缩略：普通会话前 8 位、
                                      子智能体 ag- + 6 位；codex / claude / workbuddy 三源列表均生效）
 说明:
-  列表与 -c 详细视图在表格上、下各显示一行结果条数：「共 M 条会话，本次列出 N 条」；
-  被 -n 截断时在同一句末尾补「（参数 '-n M' 可显示全）」。结果为 0 条时不显示该行。
+  列表与 -c 详细视图在表格上、下各显示一行结果条数：「>>>>>>>> 共 M 条会话，本次列出 N 条 <<<<<<<<」；
+  该行前后各 8 个尖括号在终端显示为柔和青色（重点结果），正文为默认色；尖括号便于在长列表里定位，其宽度与警告前缀一致、两处正文左对齐；
+  被 -n 截断时在同一句末尾（尖括号内）补「（参数 '-n M' 可显示全）」。
+  结果为 0 条时不显示该行。
   -s 单会话详情与 -AsJson 结构化输出不显示该行，也不改变其字段。
+  青色只作用于屏幕显示，把输出捕获到变量或重定向到文件时颜色自动消失、文字原样保留。
 "@
 }
 
@@ -2309,6 +2344,7 @@ if ($hasSessionId -and ($Source -eq 'claude' -or $Source -eq 'workbuddy')) {
     }
     if ($matched.Count -eq 0) {
         Write-Output ('未找到会话: {0}' -f $SessionId)
+        Write-AsqTokenFallbackWarning
         exit 0
     }
     # 子串匹配可能命中多条：逐条输出完整详情（条目之间以分隔线隔开），
@@ -2357,6 +2393,7 @@ if ($hasSessionId -and ($Source -eq 'claude' -or $Source -eq 'workbuddy')) {
         }
     }
     Write-Output ('-' * 80)
+    Write-AsqTokenFallbackWarning
     exit 0
 }
 
@@ -2448,8 +2485,14 @@ if ($SortBy -eq 'WorkspacePath') {
 # 符合条件总数：所有筛选完成之后、-n 截断之前记录，不额外读数据、不重复扫描。
 $matchedCount = @($sessions).Count
 
-if ($Limit -gt 0) {
-    $sessions = @($sessions | Select-Object -First $Limit)
+# 屏幕视图单次输出上限：-n 超过 $AsqScreenLimit 时截到该上限，防止一次刷出过多行。
+# -AsJson 是导出通道，免上限，保留用户指定的条数（有限或 10000 等大值均可一次取全量）。
+$effectiveLimit = $Limit
+if (-not $AsJson -and $effectiveLimit -gt $script:AsqScreenLimit) {
+    $effectiveLimit = $script:AsqScreenLimit
+}
+if ($effectiveLimit -gt 0) {
+    $sessions = @($sessions | Select-Object -First $effectiveLimit)
 }
 
 # 查询结果条数：口径为本次实际返回的条数（Limit 截断之后），不含被截断掉的部分。
@@ -2483,6 +2526,7 @@ if (@($sessions).Count -eq 0) {
             Write-Output '建议：放宽时间范围（如 -d week / -d month）；当前路径下无结果时可加 -g 在全局 session 中检索。'
         }
         # 空结果不输出条数行，只保留上面的提示与建议。
+        Write-AsqTokenFallbackWarning
         exit 0
     }
 }
@@ -2558,6 +2602,7 @@ if ($AsJson) {
         }
     }
     $payload | ConvertTo-Json -Depth 5 -Compress
+    Write-AsqTokenFallbackWarning
     exit 0
 }
 
@@ -2627,6 +2672,7 @@ if ($ShowCommands) {
     }
     Write-Output ('-' * 80)
     Write-AsqResultCount -Count $resultCount -MatchedCount $matchedCount
+    Write-AsqTokenFallbackWarning
     exit 0
 }
 
@@ -2862,6 +2908,7 @@ if ($Source -eq 'codex') {
     }
 }
 Write-AsqResultCount -Count $resultCount -MatchedCount $matchedCount
+Write-AsqTokenFallbackWarning
 }
 
 # ============================================================================
