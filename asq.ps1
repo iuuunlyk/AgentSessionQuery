@@ -126,7 +126,7 @@ param(
 Set-StrictMode -Version Latest
 
 # 版本号单一真源：发版时仅改此处；帮助文本与 -v/-Version 输出均引用本变量
-$ScriptVersion = 'v1.7.4'
+$ScriptVersion = 'v1.7.5'
 
 if ($PSVersionTable.PSEdition -eq 'Desktop') {
     Write-Warning '建议使用 PowerShell 7 (pwsh) 运行本工具；当前为 Windows PowerShell 5.1，中文可能乱码。'
@@ -412,6 +412,9 @@ function Write-AsqTokenFallbackWarning {
         Write-Host -ForegroundColor DarkGray ('WARNING: 部分会话未找到 transcript，Tokens 已退化到 session_usage.used 兜底口径（仅供量级参考，非精确值）。')
     }
 }
+
+# 查询耗时状态由入口层初始化（见文件末尾）。此处不再初始化：本函数体内的赋值
+# 会在每次调用时执行，覆盖入口层刚启动的计时器。显示函数同样定义在入口层。
 
 # 视图层模型名压缩：WorkBuddy 自定义模型在采集源里记录为 custom-local:<模型名>
 # （即 BYOK（Bring Your Own Key，自带密钥）模式），前缀独占 13 个字符位，
@@ -1372,6 +1375,55 @@ $pyCode = @'
 import sqlite3, json, sys, os, re
 from pathlib import Path
 
+# ── 快路径（先排后算）参数与工具 ──────────────────────────────────────────
+# argv[3] = 屏幕快路径期望条数；0 或缺失 = 全量路径（行为与改造前逐字一致）。
+LAZY = int(sys.argv[3]) if len(sys.argv) > 3 and sys.argv[3].strip() else 0
+
+def _has_token_fast(jp):
+    """轻量成员判定：会话文件里是否存在 token>0 的用量记录。
+    二进制逐行读、命中 usage/credit 才解析、找到正 token 立即返回。
+    仅用于判定「该会话是否纳入结果」，不用于统计数字——数字仍由 compute_tokens 全量口径给出。"""
+    try:
+        with open(jp, 'rb') as f:
+            for raw in f:
+                # 字段名大小写两种形态都要命中：真实数据多为 "usage"，
+                # fixture / 部分记录用 "rawUsage"（大写 U）。只判小写会误跳过。
+                _low = raw.lower()
+                if b'usage' not in _low and b'credit' not in _low:
+                    continue
+                try:
+                    o = json.loads(raw.decode('utf-8', 'replace'))
+                except Exception:
+                    continue
+                if not isinstance(o, dict):
+                    continue
+                _pd = o.get('providerData') if isinstance(o.get('providerData'), dict) else None
+                _u = None
+                _m = o.get('message') if isinstance(o.get('message'), dict) else None
+                if isinstance(_m, dict) and isinstance(_m.get('usage'), dict):
+                    _u = _m['usage']
+                elif isinstance(_pd, dict):
+                    _u = _pd.get('usage') or _pd.get('rawUsage')
+                if isinstance(_u, dict):
+                    for _k in ('input_tokens', 'inputTokens', 'output_tokens', 'outputTokens',
+                               'cache_read_input_tokens', 'cacheTokens', 'total_tokens', 'totalTokens'):
+                        _v = _u.get(_k)
+                        if isinstance(_v, (int, float)) and _v > 0:
+                            return True
+    except Exception:
+        pass
+    return False
+
+def _db_time(d):
+    """与 PowerShell 层 $la 回退链一致：last_activity_at → updated_at → created_at。"""
+    for _k in ('last_activity_at', 'updated_at', 'created_at'):
+        if d.get(_k):
+            try:
+                return int(d[_k])
+            except Exception:
+                pass
+    return 0
+
 db = sys.argv[1]
 out = sys.argv[2]
 db_dir = os.path.dirname(os.path.abspath(db))
@@ -1659,224 +1711,479 @@ cur.execute("""
     FROM sessions s
     LEFT JOIN session_usage su ON su.session_id = s.id
 """)
-db_ids = set()
-rows = []
-for r in cur.fetchall():
-    d = dict(r)
-    sid = d['id']
-    db_ids.add(sid)
-    is_deleted = d.get('deleted_at') is not None
-    total, inp, outp, cr, cw, rs, requests, turns = 0, 0, 0, 0, 0, 0, 0, 0
-    # 无 transcript 文件时实际积分不可计算，保持 None（渲染层显示 '-'），
-    # 与「有文件但全是免费模型请求 → 0.00」区分开。
-    acredits = None
-    jp = session_file_map.get(sid)
-    if jp:
+def run_full():
+    db_ids = set()
+    rows = []
+    for r in cur.fetchall():
+        d = dict(r)
+        sid = d['id']
+        db_ids.add(sid)
+        is_deleted = d.get('deleted_at') is not None
+        total, inp, outp, cr, cw, rs, requests, turns = 0, 0, 0, 0, 0, 0, 0, 0
+        # 无 transcript 文件时实际积分不可计算，保持 None（渲染层显示 '-'），
+        # 与「有文件但全是免费模型请求 → 0.00」区分开。
+        acredits = None
+        jp = session_file_map.get(sid)
+        if jp:
+            total, inp, outp, cr, cw, rs, requests, turns, acredits = compute_tokens(jp)
+        # 标题按五级回退定级（custom_title → aiTitle → DB title → 首条用户消息 → 兜底）
+        d['resolved_title'] = resolve_title(d.get('custom_title'), d.get('title'), jp)
+        if is_deleted:
+            if total == 0:
+                continue
+            base_title = d['resolved_title'] or sid
+            d['custom_title'] = base_title + ' [已软删除]'
+            d['resolved_title'] = base_title + ' [已软删除]'
+        else:
+            if total == 0:
+                total = asnum(d.get('used_fallback'))
+                # 记录本会话的 Token 数字是否来自 session_usage.used 兜底口径。
+                # 判定依据是「是否真的取了兜底值」，而非「transcript 文件是否存在」——
+                # 文件存在但 compute_tokens 因非法字节抛 UnicodeDecodeError 被吞掉时
+                # total 同样为 0，若按文件存在与否判定会把退化会话误标为 transcript，
+                # 导致降级告警不触发、-AsJson 向下游谎报数据来源。
+                if total > 0:
+                    d['token_source'] = 'used_fallback'
+        if 'token_source' not in d:
+            d['token_source'] = 'transcript'
+        # 显示积分（仅 WorkBuddy，界面口径）：credit_json 形如 {"请求标识": 积分}，会话合计 = 全部值求和。
+        # 界面口径把该会话派发的子智能体消耗合并计入派发那一轮的父请求条目，故子智能体
+        # 自身无 credit_json 记录（实测 3.99 万条子智能体请求 ID 在全部 credit_json 命中 0）。
+        # 键有两种格式（32 位十六进制 traceId / req-<epoch_ms><seq> 旧格式），求和不做键格式假设；
+        # credit_json 为空 / JSON 非法 / 空字典 → None（界面无此会话的积分记录），渲染层显示 '-'。
+        _cj = d.get('credit_json')
+        _credits = None
+        if _cj:
+            try:
+                _cd = json.loads(_cj)
+                if isinstance(_cd, dict) and len(_cd) > 0:
+                    _sum = 0.0
+                    for _v in _cd.values():
+                        try:
+                            _sum += float(_v)
+                        except (TypeError, ValueError):
+                            pass
+                    _credits = round(_sum, 2)
+            except Exception:
+                _credits = None
+        d['credits'] = _credits
+        d['actual_credits'] = acredits
+        d['tokens'] = total
+        d['input_tokens'] = inp
+        d['output_tokens'] = outp
+        d['cache_read_tokens'] = cr
+        d['cache_write_tokens'] = cw
+        d['reasoning_tokens'] = rs
+        d['requests'] = requests
+        d['turns'] = turns
+        d['deleted'] = 1 if is_deleted else 0
+        rows.append(d)
+
+    # ── 子智能体状态派生 ────────────────────────────────────────────────────────
+    # 子智能体无 DB 行、自身 transcript 无会话级状态字段；状态从父会话派生：
+    #   ① 父 transcript 的 Agent 工具结果（function_call_result，name=Agent，
+    #      输出含 [Agent ID: agent-<id>]）：status=completed → completed；
+    #      结果存在但非 completed → error（防御态，实测 0 次出现）
+    #   ② 无结果证据：借父 sessions.status——working → working；其余 → completed
+    #   ③ 父会话不可知（无 DB 行且无 transcript）→ ''（渲染层显示 '-'，与 Credits 口径一致）
+    # 父会话 id 由路径直接给出：projects/<项目>/<父会话id>/subagents/agent-<id>.jsonl。
+    # 父 transcript 懒扫 + 按父去重缓存；'[Agent ID:' 子串预筛，只解析命中行。
+    db_status_map = {}
+    for _r in rows:
+        db_status_map[_r['id']] = _r.get('status') or ''
+
+    _AGENT_ID_RE = re.compile(r'\[Agent ID: (agent-[0-9a-fA-F-]+)\]')
+
+    def _wb_scan_agent_results(jp):
+        """扫单个父 transcript，返回 {agent_sid: result_status}；异常一律降级空 dict"""
+        out = {}
+        try:
+            with open(jp, 'r', encoding='utf-8', errors='replace') as f:
+                for line in f:
+                    if '[Agent ID:' not in line:
+                        continue
+                    try:
+                        o = json.loads(line)
+                    except Exception:
+                        continue
+                    if not isinstance(o, dict):
+                        continue
+                    if o.get('type') != 'function_call_result' or o.get('name') != 'Agent':
+                        continue
+                    output = o.get('output')
+                    if isinstance(output, dict):
+                        text = output.get('text')
+                    elif isinstance(output, str):
+                        text = output
+                    else:
+                        text = None
+                    if not isinstance(text, str):
+                        continue
+                    for m in _AGENT_ID_RE.finditer(text):
+                        out[m.group(1)] = o.get('status') or ''
+        except Exception:
+            pass
+        return out
+
+    _agent_results_cache = {}
+
+    def _wb_derive_subagent_status(sid, jp):
+        """子智能体状态派生；无法派生返回 ''（列表渲染 '-'）。"""
+        sub_dir = os.path.dirname(jp)
+        if os.path.basename(sub_dir) != 'subagents':
+            return ''
+        parent_sid = os.path.basename(os.path.dirname(sub_dir))
+        if not parent_sid:
+            return ''
+        if parent_sid not in _agent_results_cache:
+            pjp = session_file_map.get(parent_sid)
+            _agent_results_cache[parent_sid] = _wb_scan_agent_results(pjp) if pjp else {}
+        results = _agent_results_cache[parent_sid]
+        if sid in results:
+            return 'completed' if results[sid] == 'completed' else 'error'
+        pstatus = db_status_map.get(parent_sid)
+        if pstatus is None:
+            return ''
+        if pstatus == 'working':
+            return 'working'
+        return 'completed'
+
+    for sid, jp in session_file_map.items():
+        if sid in db_ids:
+            continue
         total, inp, outp, cr, cw, rs, requests, turns, acredits = compute_tokens(jp)
-    # 标题按五级回退定级（custom_title → aiTitle → DB title → 首条用户消息 → 兜底）
-    d['resolved_title'] = resolve_title(d.get('custom_title'), d.get('title'), jp)
-    if is_deleted:
         if total == 0:
             continue
-        base_title = d['resolved_title'] or sid
-        d['custom_title'] = base_title + ' [已软删除]'
-        d['resolved_title'] = base_title + ' [已软删除]'
-    else:
-        if total == 0:
-            total = asnum(d.get('used_fallback'))
-            # 记录本会话的 Token 数字是否来自 session_usage.used 兜底口径。
-            # 判定依据是「是否真的取了兜底值」，而非「transcript 文件是否存在」——
-            # 文件存在但 compute_tokens 因非法字节抛 UnicodeDecodeError 被吞掉时
-            # total 同样为 0，若按文件存在与否判定会把退化会话误标为 transcript，
-            # 导致降级告警不触发、-AsJson 向下游谎报数据来源。
-            if total > 0:
-                d['token_source'] = 'used_fallback'
-    if 'token_source' not in d:
-        d['token_source'] = 'transcript'
-    # 显示积分（仅 WorkBuddy，界面口径）：credit_json 形如 {"请求标识": 积分}，会话合计 = 全部值求和。
-    # 界面口径把该会话派发的子智能体消耗合并计入派发那一轮的父请求条目，故子智能体
-    # 自身无 credit_json 记录（实测 3.99 万条子智能体请求 ID 在全部 credit_json 命中 0）。
-    # 键有两种格式（32 位十六进制 traceId / req-<epoch_ms><seq> 旧格式），求和不做键格式假设；
-    # credit_json 为空 / JSON 非法 / 空字典 → None（界面无此会话的积分记录），渲染层显示 '-'。
-    _cj = d.get('credit_json')
-    _credits = None
-    if _cj:
+        is_agent = sid.startswith('agent-')
+        model = ''
         try:
-            _cd = json.loads(_cj)
-            if isinstance(_cd, dict) and len(_cd) > 0:
-                _sum = 0.0
-                for _v in _cd.values():
+            with open(jp, 'r', encoding='utf-8') as _mf:
+                for _line in _mf:
                     try:
-                        _sum += float(_v)
-                    except (TypeError, ValueError):
-                        pass
-                _credits = round(_sum, 2)
+                        _o = json.loads(_line)
+                    except Exception:
+                        continue
+                    if isinstance(_o, dict):
+                        # 模型回退链：providerData.requestModelId（请求的模型路由，与 DB
+                        # sessions.model 同口径，BYOK 会话带 custom-local: 前缀）→
+                        # providerData.model（实际生效模型裸名，无前缀）→
+                        # requestModelName → 顶层 model → message.model（旧口径兜底）。
+                        # requestModelId 优先的原因：主会话 Model 取自 DB（路由口径），
+                        # 子智能体若优先取裸名会丢失 custom-local: 前缀，BYOK: 显示标识
+                        # 随之丢失，与主会话口径不一致。
+                        _pd = _o.get('providerData') if isinstance(_o.get('providerData'), dict) else None
+                        _m = None
+                        if _pd:
+                            _m = _pd.get('requestModelId') or _pd.get('model') or _pd.get('requestModelName')
+                        if not _m:
+                            _m = _o.get('model')
+                        if not _m and isinstance(_o.get('message'), dict):
+                            _m = _o['message'].get('model')
+                        if _m:
+                            model = _m
+                            break
         except Exception:
-            _credits = None
-    d['credits'] = _credits
-    d['actual_credits'] = acredits
-    d['tokens'] = total
-    d['input_tokens'] = inp
-    d['output_tokens'] = outp
-    d['cache_read_tokens'] = cr
-    d['cache_write_tokens'] = cw
-    d['reasoning_tokens'] = rs
-    d['requests'] = requests
-    d['turns'] = turns
-    d['deleted'] = 1 if is_deleted else 0
-    rows.append(d)
+            pass
+        _mtime = int(os.path.getmtime(jp) * 1000)
+        # 合成会话（无 DB 行）：无 custom_title / DB title，走 aiTitle → 首条用户消息 → 兜底
+        _syn_label = ('子智能体: ' + sid) if is_agent else sid
+        _syn_resolved = resolve_title(None, None, jp)
+        if _syn_resolved == '(无标题会话)':
+            _syn_resolved = _syn_label
+        d = {
+            'id': sid,
+            'title': None,
+            'custom_title': _syn_label,
+            'resolved_title': _syn_resolved,
+            # os.path.dirname 对混合分隔符输入原样保留中间的分隔符（实测
+            # ntpath.dirname('C:/Users/x\\y/z.jsonl') -> 'C:/Users/x\\y'），故显式归一。
+            # 只做分隔符层面的归一化，不做路径语义判断：WorkBuddy 临时任务生成的
+            # 工作区（如 .../2026-10-09-21-11-17 形态）是合法值，原样保留。
+            'cwd': os.path.normpath(os.path.dirname(jp)).replace('/', os.sep),
+            'model': model,
+            'last_activity_at': _mtime,
+            'updated_at': _mtime,
+            'created_at': _mtime,
+            'mode': '',
+            'source_mode': '',
+            'permission_mode': '',
+            'status': _wb_derive_subagent_status(sid, jp),
+            'expert_id': '',
+            'is_background_automation': 1 if is_agent else 0,
+            'is_playground': 0,
+            'deleted_at': None,
+            'used_fallback': 0,
+            'credits': None,
+            'actual_credits': acredits,
+            'token_source': 'transcript',
+            'tokens': total,
+            'input_tokens': inp,
+            'output_tokens': outp,
+            'cache_read_tokens': cr,
+            'cache_write_tokens': cw,
+            'reasoning_tokens': rs,
+            'requests': requests,
+            'turns': turns,
+            'deleted': 0,
+            'synthetic': 1,
+        }
+        rows.append(d)
+    return rows
 
-# ── 子智能体状态派生 ────────────────────────────────────────────────────────
-# 子智能体无 DB 行、自身 transcript 无会话级状态字段；状态从父会话派生：
-#   ① 父 transcript 的 Agent 工具结果（function_call_result，name=Agent，
-#      输出含 [Agent ID: agent-<id>]）：status=completed → completed；
-#      结果存在但非 completed → error（防御态，实测 0 次出现）
-#   ② 无结果证据：借父 sessions.status——working → working；其余 → completed
-#   ③ 父会话不可知（无 DB 行且无 transcript）→ ''（渲染层显示 '-'，与 Credits 口径一致）
-# 父会话 id 由路径直接给出：projects/<项目>/<父会话id>/subagents/agent-<id>.jsonl。
-# 父 transcript 懒扫 + 按父去重缓存；'[Agent ID:' 子串预筛，只解析命中行。
-db_status_map = {}
-for _r in rows:
-    db_status_map[_r['id']] = _r.get('status') or ''
+def run_lazy():
+    global db_status_map
+    _all = list(cur.fetchall())
+    _all_dict = [dict(_r) for _r in _all]
+    _db_ids = set(_r['id'] for _r in _all)
+    _cands = []
+    for _r in _all:
+        _d = dict(_r)
+        # 软删除：须有 transcript 且 token>0 才纳入（与全量逻辑一致）
+        if _d.get('deleted_at') is not None:
+            _jp0 = session_file_map.get(_d['id'])
+            if not _jp0 or not _has_token_fast(_jp0):
+                continue
+        _cands.append((_db_time(_d), 'db', _d['id'], _r, None))
+    for _sid, _jp in session_file_map.items():
+        if _sid in _db_ids:
+            continue
+        # 合成会话：token>0 才纳入（与全量逻辑一致），轻量探测避免读全文
+        if not _has_token_fast(_jp):
+            continue
+        try:
+            _mt = int(os.path.getmtime(_jp) * 1000)
+        except Exception:
+            _mt = 0
+        _cands.append((_mt, 'syn', _sid, _sid, _jp))
+    # 排序键与 PowerShell 层逐字一致：LastActivity 降序 + SessionId 升序
+    _cands.sort(key=lambda x: (-x[0], str(x[2])))
+    _matched = len(_cands)   # 精确总数：成员判定后的全部候选数
+    _sel = _cands[:LAZY]
+    _sel_db = [_x[3] for _x in _sel if _x[1] == 'db']
+    _sel_syn = [(_x[3], _x[4]) for _x in _sel if _x[1] == 'syn']
+    db_ids = set(_db_ids)    # 供下方合成会话循环体引用
+    rows = []
+    for r in _sel_db:
+        d = dict(r)
+        sid = d['id']
+        db_ids.add(sid)
+        is_deleted = d.get('deleted_at') is not None
+        total, inp, outp, cr, cw, rs, requests, turns = 0, 0, 0, 0, 0, 0, 0, 0
+        # 无 transcript 文件时实际积分不可计算，保持 None（渲染层显示 '-'），
+        # 与「有文件但全是免费模型请求 → 0.00」区分开。
+        acredits = None
+        jp = session_file_map.get(sid)
+        if jp:
+            total, inp, outp, cr, cw, rs, requests, turns, acredits = compute_tokens(jp)
+        # 标题按五级回退定级（custom_title → aiTitle → DB title → 首条用户消息 → 兜底）
+        d['resolved_title'] = resolve_title(d.get('custom_title'), d.get('title'), jp)
+        if is_deleted:
+            if total == 0:
+                continue
+            base_title = d['resolved_title'] or sid
+            d['custom_title'] = base_title + ' [已软删除]'
+            d['resolved_title'] = base_title + ' [已软删除]'
+        else:
+            if total == 0:
+                total = asnum(d.get('used_fallback'))
+                # 记录本会话的 Token 数字是否来自 session_usage.used 兜底口径。
+                # 判定依据是「是否真的取了兜底值」，而非「transcript 文件是否存在」——
+                # 文件存在但 compute_tokens 因非法字节抛 UnicodeDecodeError 被吞掉时
+                # total 同样为 0，若按文件存在与否判定会把退化会话误标为 transcript，
+                # 导致降级告警不触发、-AsJson 向下游谎报数据来源。
+                if total > 0:
+                    d['token_source'] = 'used_fallback'
+        if 'token_source' not in d:
+            d['token_source'] = 'transcript'
+        # 显示积分（仅 WorkBuddy，界面口径）：credit_json 形如 {"请求标识": 积分}，会话合计 = 全部值求和。
+        # 界面口径把该会话派发的子智能体消耗合并计入派发那一轮的父请求条目，故子智能体
+        # 自身无 credit_json 记录（实测 3.99 万条子智能体请求 ID 在全部 credit_json 命中 0）。
+        # 键有两种格式（32 位十六进制 traceId / req-<epoch_ms><seq> 旧格式），求和不做键格式假设；
+        # credit_json 为空 / JSON 非法 / 空字典 → None（界面无此会话的积分记录），渲染层显示 '-'。
+        _cj = d.get('credit_json')
+        _credits = None
+        if _cj:
+            try:
+                _cd = json.loads(_cj)
+                if isinstance(_cd, dict) and len(_cd) > 0:
+                    _sum = 0.0
+                    for _v in _cd.values():
+                        try:
+                            _sum += float(_v)
+                        except (TypeError, ValueError):
+                            pass
+                    _credits = round(_sum, 2)
+            except Exception:
+                _credits = None
+        d['credits'] = _credits
+        d['actual_credits'] = acredits
+        d['tokens'] = total
+        d['input_tokens'] = inp
+        d['output_tokens'] = outp
+        d['cache_read_tokens'] = cr
+        d['cache_write_tokens'] = cw
+        d['reasoning_tokens'] = rs
+        d['requests'] = requests
+        d['turns'] = turns
+        d['deleted'] = 1 if is_deleted else 0
+        rows.append(d)
+    # ── 子智能体状态派生 ────────────────────────────────────────────────────────
+    # 子智能体无 DB 行、自身 transcript 无会话级状态字段；状态从父会话派生：
+    #   ① 父 transcript 的 Agent 工具结果（function_call_result，name=Agent，
+    #      输出含 [Agent ID: agent-<id>]）：status=completed → completed；
+    #      结果存在但非 completed → error（防御态，实测 0 次出现）
+    #   ② 无结果证据：借父 sessions.status——working → working；其余 → completed
+    #   ③ 父会话不可知（无 DB 行且无 transcript）→ ''（渲染层显示 '-'，与 Credits 口径一致）
+    # 父会话 id 由路径直接给出：projects/<项目>/<父会话id>/subagents/agent-<id>.jsonl。
+    # 父 transcript 懒扫 + 按父去重缓存；'[Agent ID:' 子串预筛，只解析命中行。
+    db_status_map = {}
+    for _r in _all_dict:
+        db_status_map[_r['id']] = _r.get('status') or ''
 
-_AGENT_ID_RE = re.compile(r'\[Agent ID: (agent-[0-9a-fA-F-]+)\]')
+    _AGENT_ID_RE = re.compile(r'\[Agent ID: (agent-[0-9a-fA-F-]+)\]')
 
-def _wb_scan_agent_results(jp):
-    """扫单个父 transcript，返回 {agent_sid: result_status}；异常一律降级空 dict"""
-    out = {}
-    try:
-        with open(jp, 'r', encoding='utf-8', errors='replace') as f:
-            for line in f:
-                if '[Agent ID:' not in line:
-                    continue
-                try:
-                    o = json.loads(line)
-                except Exception:
-                    continue
-                if not isinstance(o, dict):
-                    continue
-                if o.get('type') != 'function_call_result' or o.get('name') != 'Agent':
-                    continue
-                output = o.get('output')
-                if isinstance(output, dict):
-                    text = output.get('text')
-                elif isinstance(output, str):
-                    text = output
-                else:
-                    text = None
-                if not isinstance(text, str):
-                    continue
-                for m in _AGENT_ID_RE.finditer(text):
-                    out[m.group(1)] = o.get('status') or ''
-    except Exception:
-        pass
-    return out
+    def _wb_scan_agent_results(jp):
+        """扫单个父 transcript，返回 {agent_sid: result_status}；异常一律降级空 dict"""
+        out = {}
+        try:
+            with open(jp, 'r', encoding='utf-8', errors='replace') as f:
+                for line in f:
+                    if '[Agent ID:' not in line:
+                        continue
+                    try:
+                        o = json.loads(line)
+                    except Exception:
+                        continue
+                    if not isinstance(o, dict):
+                        continue
+                    if o.get('type') != 'function_call_result' or o.get('name') != 'Agent':
+                        continue
+                    output = o.get('output')
+                    if isinstance(output, dict):
+                        text = output.get('text')
+                    elif isinstance(output, str):
+                        text = output
+                    else:
+                        text = None
+                    if not isinstance(text, str):
+                        continue
+                    for m in _AGENT_ID_RE.finditer(text):
+                        out[m.group(1)] = o.get('status') or ''
+        except Exception:
+            pass
+        return out
 
-_agent_results_cache = {}
+    _agent_results_cache = {}
 
-def _wb_derive_subagent_status(sid, jp):
-    """子智能体状态派生；无法派生返回 ''（列表渲染 '-'）。"""
-    sub_dir = os.path.dirname(jp)
-    if os.path.basename(sub_dir) != 'subagents':
-        return ''
-    parent_sid = os.path.basename(os.path.dirname(sub_dir))
-    if not parent_sid:
-        return ''
-    if parent_sid not in _agent_results_cache:
-        pjp = session_file_map.get(parent_sid)
-        _agent_results_cache[parent_sid] = _wb_scan_agent_results(pjp) if pjp else {}
-    results = _agent_results_cache[parent_sid]
-    if sid in results:
-        return 'completed' if results[sid] == 'completed' else 'error'
-    pstatus = db_status_map.get(parent_sid)
-    if pstatus is None:
-        return ''
-    if pstatus == 'working':
-        return 'working'
-    return 'completed'
+    def _wb_derive_subagent_status(sid, jp):
+        """子智能体状态派生；无法派生返回 ''（列表渲染 '-'）。"""
+        sub_dir = os.path.dirname(jp)
+        if os.path.basename(sub_dir) != 'subagents':
+            return ''
+        parent_sid = os.path.basename(os.path.dirname(sub_dir))
+        if not parent_sid:
+            return ''
+        if parent_sid not in _agent_results_cache:
+            pjp = session_file_map.get(parent_sid)
+            _agent_results_cache[parent_sid] = _wb_scan_agent_results(pjp) if pjp else {}
+        results = _agent_results_cache[parent_sid]
+        if sid in results:
+            return 'completed' if results[sid] == 'completed' else 'error'
+        pstatus = db_status_map.get(parent_sid)
+        if pstatus is None:
+            return ''
+        if pstatus == 'working':
+            return 'working'
+        return 'completed'
+    for sid, jp in _sel_syn:
+        if sid in db_ids:
+            continue
+        total, inp, outp, cr, cw, rs, requests, turns, acredits = compute_tokens(jp)
+        if total == 0:
+            continue
+        is_agent = sid.startswith('agent-')
+        model = ''
+        try:
+            with open(jp, 'r', encoding='utf-8') as _mf:
+                for _line in _mf:
+                    try:
+                        _o = json.loads(_line)
+                    except Exception:
+                        continue
+                    if isinstance(_o, dict):
+                        # 模型回退链：providerData.requestModelId（请求的模型路由，与 DB
+                        # sessions.model 同口径，BYOK 会话带 custom-local: 前缀）→
+                        # providerData.model（实际生效模型裸名，无前缀）→
+                        # requestModelName → 顶层 model → message.model（旧口径兜底）。
+                        # requestModelId 优先的原因：主会话 Model 取自 DB（路由口径），
+                        # 子智能体若优先取裸名会丢失 custom-local: 前缀，BYOK: 显示标识
+                        # 随之丢失，与主会话口径不一致。
+                        _pd = _o.get('providerData') if isinstance(_o.get('providerData'), dict) else None
+                        _m = None
+                        if _pd:
+                            _m = _pd.get('requestModelId') or _pd.get('model') or _pd.get('requestModelName')
+                        if not _m:
+                            _m = _o.get('model')
+                        if not _m and isinstance(_o.get('message'), dict):
+                            _m = _o['message'].get('model')
+                        if _m:
+                            model = _m
+                            break
+        except Exception:
+            pass
+        _mtime = int(os.path.getmtime(jp) * 1000)
+        # 合成会话（无 DB 行）：无 custom_title / DB title，走 aiTitle → 首条用户消息 → 兜底
+        _syn_label = ('子智能体: ' + sid) if is_agent else sid
+        _syn_resolved = resolve_title(None, None, jp)
+        if _syn_resolved == '(无标题会话)':
+            _syn_resolved = _syn_label
+        d = {
+            'id': sid,
+            'title': None,
+            'custom_title': _syn_label,
+            'resolved_title': _syn_resolved,
+            # os.path.dirname 对混合分隔符输入原样保留中间的分隔符（实测
+            # ntpath.dirname('C:/Users/x\\y/z.jsonl') -> 'C:/Users/x\\y'），故显式归一。
+            # 只做分隔符层面的归一化，不做路径语义判断：WorkBuddy 临时任务生成的
+            # 工作区（如 .../2026-10-09-21-11-17 形态）是合法值，原样保留。
+            'cwd': os.path.normpath(os.path.dirname(jp)).replace('/', os.sep),
+            'model': model,
+            'last_activity_at': _mtime,
+            'updated_at': _mtime,
+            'created_at': _mtime,
+            'mode': '',
+            'source_mode': '',
+            'permission_mode': '',
+            'status': _wb_derive_subagent_status(sid, jp),
+            'expert_id': '',
+            'is_background_automation': 1 if is_agent else 0,
+            'is_playground': 0,
+            'deleted_at': None,
+            'used_fallback': 0,
+            'credits': None,
+            'actual_credits': acredits,
+            'token_source': 'transcript',
+            'tokens': total,
+            'input_tokens': inp,
+            'output_tokens': outp,
+            'cache_read_tokens': cr,
+            'cache_write_tokens': cw,
+            'reasoning_tokens': rs,
+            'requests': requests,
+            'turns': turns,
+            'deleted': 0,
+            'synthetic': 1,
+        }
+        rows.append(d)
+    return rows, _matched
 
-for sid, jp in session_file_map.items():
-    if sid in db_ids:
-        continue
-    total, inp, outp, cr, cw, rs, requests, turns, acredits = compute_tokens(jp)
-    if total == 0:
-        continue
-    is_agent = sid.startswith('agent-')
-    model = ''
-    try:
-        with open(jp, 'r', encoding='utf-8') as _mf:
-            for _line in _mf:
-                try:
-                    _o = json.loads(_line)
-                except Exception:
-                    continue
-                if isinstance(_o, dict):
-                    # 模型回退链：providerData.requestModelId（请求的模型路由，与 DB
-                    # sessions.model 同口径，BYOK 会话带 custom-local: 前缀）→
-                    # providerData.model（实际生效模型裸名，无前缀）→
-                    # requestModelName → 顶层 model → message.model（旧口径兜底）。
-                    # requestModelId 优先的原因：主会话 Model 取自 DB（路由口径），
-                    # 子智能体若优先取裸名会丢失 custom-local: 前缀，BYOK: 显示标识
-                    # 随之丢失，与主会话口径不一致。
-                    _pd = _o.get('providerData') if isinstance(_o.get('providerData'), dict) else None
-                    _m = None
-                    if _pd:
-                        _m = _pd.get('requestModelId') or _pd.get('model') or _pd.get('requestModelName')
-                    if not _m:
-                        _m = _o.get('model')
-                    if not _m and isinstance(_o.get('message'), dict):
-                        _m = _o['message'].get('model')
-                    if _m:
-                        model = _m
-                        break
-    except Exception:
-        pass
-    _mtime = int(os.path.getmtime(jp) * 1000)
-    # 合成会话（无 DB 行）：无 custom_title / DB title，走 aiTitle → 首条用户消息 → 兜底
-    _syn_label = ('子智能体: ' + sid) if is_agent else sid
-    _syn_resolved = resolve_title(None, None, jp)
-    if _syn_resolved == '(无标题会话)':
-        _syn_resolved = _syn_label
-    d = {
-        'id': sid,
-        'title': None,
-        'custom_title': _syn_label,
-        'resolved_title': _syn_resolved,
-        # os.path.dirname 对混合分隔符输入原样保留中间的分隔符（实测
-        # ntpath.dirname('C:/Users/x\\y/z.jsonl') -> 'C:/Users/x\\y'），故显式归一。
-        # 只做分隔符层面的归一化，不做路径语义判断：WorkBuddy 临时任务生成的
-        # 工作区（如 .../2026-10-09-21-11-17 形态）是合法值，原样保留。
-        'cwd': os.path.normpath(os.path.dirname(jp)).replace('/', os.sep),
-        'model': model,
-        'last_activity_at': _mtime,
-        'updated_at': _mtime,
-        'created_at': _mtime,
-        'mode': '',
-        'source_mode': '',
-        'permission_mode': '',
-        'status': _wb_derive_subagent_status(sid, jp),
-        'expert_id': '',
-        'is_background_automation': 1 if is_agent else 0,
-        'is_playground': 0,
-        'deleted_at': None,
-        'used_fallback': 0,
-        'credits': None,
-        'actual_credits': acredits,
-        'token_source': 'transcript',
-        'tokens': total,
-        'input_tokens': inp,
-        'output_tokens': outp,
-        'cache_read_tokens': cr,
-        'cache_write_tokens': cw,
-        'reasoning_tokens': rs,
-        'requests': requests,
-        'turns': turns,
-        'deleted': 0,
-        'synthetic': 1,
-    }
-    rows.append(d)
+if LAZY > 0:
+    rows, matched = run_lazy()
+else:
+    rows = run_full()
+    matched = len(rows)
 with open(out, 'w', encoding='utf-8') as f:
-    json.dump(rows, f, ensure_ascii=False)
+    json.dump({'matched': matched, 'rows': rows}, f, ensure_ascii=False)
 con.close()
 '@
 
@@ -1908,7 +2215,10 @@ function Get-WorkBuddyPython {
 function Get-WorkBuddySessions {
     param(
         [Parameter(Mandatory = $true)]
-        [string]$DbPath
+        [string]$DbPath,
+        # 快路径条数：>0 时 Python 桥先按轻量键排序、只对前 N 条读聊天内容算详情，
+        # 并回传精确总数（成员判定后的全部候选数）。0 = 全量路径，行为与改造前一致。
+        [int]$LazyLimit = 0
     )
 
     if (-not (Test-Path -LiteralPath $DbPath)) {
@@ -1922,9 +2232,14 @@ function Get-WorkBuddySessions {
 
     $prevPioEncoding = $env:PYTHONIOENCODING
     $env:PYTHONIOENCODING = 'utf-8'
-    $tmpJson = Join-Path $env:TEMP ('wb-sessions-' + [guid]::NewGuid().ToString('N') + '.json')
+    $tmpGuid = [guid]::NewGuid().ToString('N')
+    $tmpPy = Join-Path $env:TEMP ('wb-bridge-' + $tmpGuid + '.py')
+    $tmpJson = Join-Path $env:TEMP ('wb-sessions-' + $tmpGuid + '.json')
     try {
-        $pyOutput = & $py -c $pyCode $DbPath $tmpJson 2>&1 | Out-String
+        # 桥接脚本以临时文件执行，不用 python -c 内联：Windows 命令行长度上限会截断长脚本，
+        # 触发「文件名或扩展名太长」。写文件走 UTF8 无 BOM，避免 Python 解析到 BOM 头。
+        [System.IO.File]::WriteAllText($tmpPy, $pyCode, (New-Object System.Text.UTF8Encoding($false)))
+        $pyOutput = & $py $tmpPy $DbPath $tmpJson $LazyLimit 2>&1 | Out-String
         if ($LASTEXITCODE -ne 0) {
             $context = 'WorkBuddy 数据读取失败。数据库可能已升级、损坏，或 Python 桥接运行出错。'
             throw "$context`nPython 桥接错误（exit ${LASTEXITCODE}）：$($pyOutput.Trim())"
@@ -1936,12 +2251,22 @@ function Get-WorkBuddySessions {
     } finally {
         $env:PYTHONIOENCODING = $prevPioEncoding
         Remove-Item -LiteralPath $tmpJson -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $tmpPy -Force -ErrorAction SilentlyContinue
     }
     if ([string]::IsNullOrWhiteSpace($raw)) {
+        $script:AsqPythonMatchedCount = 0
         return @()
     }
 
-    $sessionRows = $raw | ConvertFrom-Json
+    $parsed = $raw | ConvertFrom-Json
+    # 新桥统一输出 { matched, rows }；兼容旧输出（纯数组）以防降级读到旧脚本。
+    if ($null -ne $parsed.PSObject.Properties['matched'] -and $null -ne $parsed.PSObject.Properties['rows']) {
+        $script:AsqPythonMatchedCount = [int]$parsed.matched
+        $sessionRows = @($parsed.rows)
+    } else {
+        $script:AsqPythonMatchedCount = @($parsed).Count
+        $sessionRows = @($parsed)
+    }
 
     $records = foreach ($s in $sessionRows) {
         # 标题由 Python 侧按五级回退定级（custom_title → aiTitle → DB title → 首条用户消息 → 兜底）
@@ -2268,6 +2593,10 @@ if ($null -ne $WithinDays -and -not [string]::IsNullOrWhiteSpace($WithinDays.ToS
 }
 $hasWithinFilter = ($null -ne $withinStart)
 
+# 耗时行开关：走到这里说明源/天数等参数已校验通过、即将真正查询。
+# 帮助、版本、参数错误都在上方 exit，不会置位；-AsJson 是给脚本读的合约，也不置位。
+$script:AsqElapsedShow = -not $AsJson
+
 $hasQuery = -not [string]::IsNullOrWhiteSpace($SessionIdLike)
 $hasTitleQuery = -not [string]::IsNullOrWhiteSpace($TitleLike)
 $hasSessionId = -not [string]::IsNullOrWhiteSpace($SessionId)
@@ -2278,6 +2607,7 @@ $hasAnyQuery = $hasQuery -or $hasTitleQuery -or $hasTypeFilter -or $hasWithinFil
 $sourceLabel = $null
 $dataSourceDir = $null
 $sessions = $null
+$useLazy = $false
 switch ($Source) {
     'codex' {
         $sourceLabel = 'Codex'
@@ -2295,7 +2625,21 @@ switch ($Source) {
         $sourceLabel = 'WorkBuddy'
         $dataDir = if ($DbPath) { $DbPath } else { Join-Path $HOME '.workbuddy\workbuddy.db' }
         $dataSourceDir = Split-Path -Parent $dataDir
-        $sessions = @(Get-WorkBuddySessions -DbPath $dataDir)
+        # 快路径（先排后算）：仅「全局、无任何筛选、默认排序、屏幕视图、非详情/展示」时启用。
+        # 这些条件下 Python 侧排序截断与本层后续筛选/排序/截断顺序一致，结果可保证与全量逐字相同。
+        # 带 -q / -Title / -s / -Type / -d / -o WorkspacePath / -AsJson / -c 时一律走全量，
+        # 保证筛选语义、导出完整性与既有行为零回归。
+        $useLazy = $Global -and -not $hasQuery -and -not $hasTitleQuery -and `
+                   -not $hasSessionId -and -not $hasTypeFilter -and -not $hasWithinFilter -and `
+                   -not $AsJson -and -not $ShowCommands -and ($SortBy -eq 'LastActivity')
+        if ($useLazy) {
+            $lazyN = if ($Limit -gt 0) { [int]$Limit } else { 0 }
+            if ($lazyN -gt $script:AsqScreenLimit) { $lazyN = $script:AsqScreenLimit }
+            if ($lazyN -le 0) { $lazyN = $script:AsqScreenLimit }
+            $sessions = @(Get-WorkBuddySessions -DbPath $dataDir -LazyLimit $lazyN)
+        } else {
+            $sessions = @(Get-WorkBuddySessions -DbPath $dataDir)
+        }
     }
 }
 
@@ -2483,7 +2827,13 @@ if ($SortBy -eq 'WorkspacePath') {
 }
 
 # 符合条件总数：所有筛选完成之后、-n 截断之前记录，不额外读数据、不重复扫描。
-$matchedCount = @($sessions).Count
+# 快路径下 $sessions 已被 Python 侧截断到前 N 条，不能拿它当总数——改用 Python 桥
+# 在成员判定阶段精确统计、随结果回传的总数（见 Get-WorkBuddySessions 的 $script:AsqPythonMatchedCount）。
+if ($useLazy -and $Source -eq 'workbuddy') {
+    $matchedCount = $script:AsqPythonMatchedCount
+} else {
+    $matchedCount = @($sessions).Count
+}
 
 # 屏幕视图单次输出上限：-n 超过 $AsqScreenLimit 时截到该上限，防止一次刷出过多行。
 # -AsJson 是导出通道，免上限，保留用户指定的条数（有限或 10000 等大值均可一次取全量）。
@@ -3136,4 +3486,34 @@ if ($asqOverflow.Count -gt 0) {
     $asqNamed['RemainingArgs'] = $asqOverflow.ToArray()
 }
 
-Invoke-AsqMain @asqNamed
+# 查询耗时行：固定在整条命令的最后一行输出。
+# 口径：从进入入口层开始计时到收尾，不含 PowerShell 进程本身的启动时间。
+# 60 秒以内写「本次查询耗时 x.xxx秒」；超过 60 秒在括号内补「x分x秒xxx毫秒」。
+# 只在真正查询时输出：-AsJson / 帮助 / 版本 / 参数错误都不输出。
+function Write-AsqElapsed {
+    if (-not $script:AsqElapsedShow) { return }
+    if ($null -eq $script:AsqElapsedWatch) { return }
+    $script:AsqElapsedWatch.Stop()
+    $totalMs = [long]$script:AsqElapsedWatch.ElapsedMilliseconds
+    $secondsText = [string]::Format([cultureinfo]::InvariantCulture, '{0:F3}', ($totalMs / 1000.0))
+    $line = '本次查询耗时 {0}秒' -f $secondsText
+    if ($totalMs -gt 60000) {
+        $minutes = [int][math]::Floor($totalMs / 60000.0)
+        $remainMs = $totalMs - ($minutes * 60000)
+        $secs = [int][math]::Floor($remainMs / 1000.0)
+        $ms = [int]($remainMs - ($secs * 1000))
+        $line += '（{0}分{1}秒{2}毫秒）' -f $minutes, $secs, $ms
+    }
+    Write-Host $line
+}
+
+# 查询耗时：从进入入口层开始计时；try/finally 保证正常结束与中途 exit 都会走到收尾。
+# 帮助/版本/参数错误在 Invoke-AsqMain 内置位之前就 exit，或在本 try 之外 exit，
+# Write-AsqElapsed 内部按 $script:AsqElapsedShow 判定后不输出，故这些场景不受影响。
+$script:AsqElapsedShow = $false
+$script:AsqElapsedWatch = [System.Diagnostics.Stopwatch]::StartNew()
+try {
+    Invoke-AsqMain @asqNamed
+} finally {
+    Write-AsqElapsed
+}

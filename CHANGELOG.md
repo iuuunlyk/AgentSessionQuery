@@ -2,6 +2,16 @@
 
 格式遵循 [Keep a Changelog 2.0.0](https://keepachangelog.com/en/2.0.0/)，版本号遵循 [Semantic Versioning 2.0.0](https://semver.org/spec/v2.0.0.html)。
 
+## [1.7.5] - 2026-11-24
+
+### Added（新增）
+
+- 查询结果末尾显示本次查询耗时，精确到毫秒；超过一分钟时补充显示分、秒。
+
+### Changed（变更）
+
+- 改进会话列表的读取机制，只加载本次要显示的会话内容，缩短列表加载等待。
+
 ## [1.7.4] - 2026-11-21
 
 ### Added（新增）
